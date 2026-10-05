@@ -15,6 +15,7 @@ endif()
 
 option(TTG_BUILD_SERVER "Build the REST server and core library" ON)
 option(TTG_BUILD_TESTS "Build unit tests" ON)
+option(TTG_BUILD_BENCHMARKS "Build the Google Benchmark suite" OFF)
 option(TTG_ENABLE_FUZZING "Build the libFuzzer harness (Clang + libFuzzer only)" OFF)
 option(TTG_ENABLE_SANITIZERS "Instrument builds with AddressSanitizer and UBSan" OFF)
 
@@ -38,7 +39,7 @@ target_link_options(ttg_parser PUBLIC ${TTG_SANITIZE_FLAGS})
 # ---------------------------------------------------------------------------
 # Core (store + JSON serialization). Needs nlohmann_json.
 # ---------------------------------------------------------------------------
-if(TTG_BUILD_SERVER OR TTG_BUILD_TESTS)
+if(TTG_BUILD_SERVER OR TTG_BUILD_TESTS OR TTG_BUILD_BENCHMARKS)
     find_package(nlohmann_json CONFIG REQUIRED)
 
     add_library(ttg_core STATIC
@@ -82,6 +83,23 @@ if(TTG_BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(ttg_tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# Benchmarks (Google Benchmark): runtime and allocation metrics. Enabled with
+# -DTTG_BUILD_BENCHMARKS=ON and -o build_benchmarks=True (Conan).
+# ---------------------------------------------------------------------------
+if(TTG_BUILD_BENCHMARKS)
+    find_package(benchmark CONFIG REQUIRED)
+
+    add_executable(ttg_benchmarks
+        benchmarks/bench_parser.cpp
+        benchmarks/bench_store.cpp
+        benchmarks/memory_manager.cpp)
+
+    target_include_directories(ttg_benchmarks PRIVATE benchmarks tests)
+    target_link_libraries(ttg_benchmarks PRIVATE ttg_core benchmark::benchmark_main)
+    target_compile_options(ttg_benchmarks PRIVATE ${TTG_WARNINGS})
 endif()
 
 # ---------------------------------------------------------------------------

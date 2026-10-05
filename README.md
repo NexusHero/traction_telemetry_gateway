@@ -75,6 +75,31 @@ cmake --build build-fuzz --target fuzz_frame_parser
 ./build-fuzz/fuzz_frame_parser tests/corpus/ -max_total_time=300
 ```
 
+### Benchmarks (runtime + memory)
+
+Google Benchmark with allocation tracking (global `operator new` counters):
+
+```sh
+conan install . --build=missing -of build -s build_type=Release -o build_benchmarks=True
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+  -DTTG_BUILD_BENCHMARKS=ON
+cmake --build build --target ttg_benchmarks
+./build/ttg_benchmarks --benchmark_min_time=0.05s
+```
+
+The `allocs` / `alloc_bytes` columns show how much the code under test
+allocates **per iteration**. The interesting findings for this project:
+
+- `parse_frame` allocates **exactly once** (the output channel vector) and
+  nothing on the reject path.
+- `TelemetryStore::ingest` is **allocation-free in steady state** (channels are
+  updated in place).
+- `crc16_ccitt` allocates nothing, as expected for a pure function.
+
+That is the concrete, measurable version of "keine Allokation im heißen Pfad".
+
 ## HTTP API
 
 | Method | Path | Description |
@@ -100,6 +125,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | `ci.yml` | push / PR | Build & test (Ubuntu + macOS), ASan/UBSan, clang-tidy + cppcheck, gitleaks |
 | `supply-chain.yml` | push / PR / tag | SBOM (CycloneDX), grype CVE gate, distroless image build, trivy scan, cosign sign |
 | `fuzzing.yml` | nightly | libFuzzer on the parser, 15 minutes |
+| `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
 | `codeql.yml` | push / PR | CodeQL analysis (C++) |
 
 See `SECURITY.md` for the vulnerability policy and the "baseline" rollout for
