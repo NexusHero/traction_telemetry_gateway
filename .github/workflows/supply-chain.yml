@@ -1,0 +1,127 @@
+name: Supply chain
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # upload SARIF to code scanning
+  packages: write          # publish image to GHCR
+  id-token: write          # keyless signing
+
+env:
+  CONAN_HOME: ${{ github.workspace }}/.conan2
+
+jobs:
+  sbom-and-scan:
+    name: SBOM + dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: pip install "conan>=2.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-sbom-${{ hashFiles('conanfile.py') }}
+
+      - name: Install tools
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Resolve dependency graph (conan.lock)
+        run: |
+          conan profile detect --force
+          conan install . --build=missing -of build -s build_type=Release --lockfile-out=build/conan.lock
+
+      - name: Generate SBOM (CycloneDX)
+        run: syft dir:. -o cyclonedx-json=build/sbom.cdx.json
+
+      - name: Scan SBOM for vulnerabilities (gate = critical)
+        run: |
+          grype sbom:build/sbom.cdx.json --fail-on critical -o json=build/grype.json
+          grype sbom:build/sbom.cdx.json -o sarif=build/grype.sarif
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: build/grype.sarif
+
+      - name: Upload SBOM and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-and-scan-results
+          path: |
+            build/sbom.cdx.json
+            build/conan.lock
+            build/grype.json
+            build/grype.sarif
+          if-no-files-found: ignore
+
+  container:
+    name: Container build, scan & sign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      # Build into a fixed local tag so the scan below always has a target,
+      # regardless of branch/tag (metadata tags differ between PR and push).
+      - name: Build image (load)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: ttg:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Scan image (gate = critical)
+        run: trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Push and sign image (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            docker tag ttg:ci "$tag"
+            docker push "$tag"
+            cosign sign --yes "$tag"
+          done

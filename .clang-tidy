@@ -1,0 +1,11 @@
+---
+Checks: |
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -cert-err58-cpp
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*'
+FormatStyle: file

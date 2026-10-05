@@ -1,0 +1,28 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+out/
+
+# Conan
+CMakeUserPresets.json
+CMakePresets.json
+.conan2/
+conan.lock
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Fuzzing
+artifacts/
+fuzz-corpus/
+crash-*
+
+# Python
+__pycache__/
+*.pyc

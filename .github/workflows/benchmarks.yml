@@ -1,0 +1,64 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 0'   # weekly
+
+permissions:
+  contents: read
+
+env:
+  CONAN_HOME: ${{ github.workspace }}/.conan2
+
+jobs:
+  benchmark:
+    name: Runtime & allocation benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: pip install "conan>=2.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-bench-${{ hashFiles('conanfile.py') }}
+
+      - name: Install dependencies
+        run: |
+          conan profile detect --force
+          conan install . --build=missing -of build -s build_type=Release -o build_benchmarks=True
+
+      - name: Configure & build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+            -DTTG_BUILD_BENCHMARKS=ON
+          cmake --build build --target ttg_benchmarks
+
+      - name: Run benchmarks
+        run: |
+          ./build/ttg_benchmarks \
+            --benchmark_min_time=0.05s \
+            --benchmark_format=json \
+            --benchmark_out=benchmarks.json \
+            --benchmark_report_aggregates_only=true \
+            | tee benchmarks.txt
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            benchmarks.json
+            benchmarks.txt
+          if-no-files-found: ignore

@@ -1,0 +1,54 @@
+name: Fuzzing
+
+on:
+  schedule:
+    - cron: '0 2 * * *'          # nightly
+  workflow_dispatch:
+
+concurrency:
+  group: fuzzing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: libFuzzer (protocol parser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      # The parser has no third-party dependencies, so no Conan is needed here.
+      - name: Configure fuzzer
+        run: >
+          cmake -S . -B build-fuzz -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DTTG_BUILD_SERVER=OFF
+          -DTTG_BUILD_TESTS=OFF
+          -DTTG_ENABLE_FUZZING=ON
+
+      - name: Build fuzzer
+        run: cmake --build build-fuzz --target fuzz_frame_parser
+
+      - name: Run fuzzer (15 minutes)
+        run: |
+          mkdir -p fuzz-corpus artifacts
+          cp tests/corpus/* fuzz-corpus/ 2>/dev/null || true
+          ./build-fuzz/fuzz_frame_parser fuzz-corpus/ \
+            -max_total_time=900 \
+            -print_final_stats=1 \
+            -artifact_prefix=artifacts/
+
+      - name: Upload corpus and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzing-results
+          path: |
+            artifacts/
+            fuzz-corpus/
+          if-no-files-found: ignore
