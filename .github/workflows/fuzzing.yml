@@ -36,7 +36,7 @@ jobs:
 
       - name: Run fuzzer (15 minutes)
         run: |
-          mkdir -p fuzz-corpus
+          mkdir -p fuzz-corpus artifacts
           cp tests/corpus/* fuzz-corpus/ 2>/dev/null || true
           ./build-fuzz/fuzz_frame_parser fuzz-corpus/ \
             -max_total_time=900 \
