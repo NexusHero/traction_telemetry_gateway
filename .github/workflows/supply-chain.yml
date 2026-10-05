@@ -49,7 +49,7 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         run: syft dir:. -o cyclonedx-json=build/sbom.cdx.json
 
-      - name: Scan SBOM for vulnerabilities (gate: critical)
+      - name: Scan SBOM for vulnerabilities (gate = critical)
         run: |
           grype sbom:build/sbom.cdx.json --fail-on critical -o json=build/grype.json
           grype sbom:build/sbom.cdx.json -o sarif=build/grype.sarif
@@ -111,7 +111,7 @@ jobs:
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
-      - name: Scan image (gate: critical)
+      - name: Scan image (gate = critical)
         run: trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
 
       - name: Install cosign
