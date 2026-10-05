@@ -1,0 +1,61 @@
+# Threat model — Traction Telemetry Gateway
+
+One page, STRIDE over the trust boundaries. The model lives here so it can be
+versioned and re-reviewed whenever the architecture changes (the step most teams
+skip).
+
+## System overview
+
+```
+[Train bus / telemetry producer]  --POST /v1/frames (binary)-->  [TTG gateway]
+                                                                    |
+                                                    [in-memory channel store]
+                                                                    |
+[Ops / dashboards]  <--GET /v1/telemetry, /v1/stats, /healthz----+
+```
+
+- The gateway is a single process. No persistence, no authentication in the
+  current scope (see assumptions).
+- The **trust boundary** is the `POST /v1/frames` body: arbitrary attacker-
+  controlled bytes fed to `ttg::parse_frame`.
+
+## STRIDE
+
+| # | Threat | Violated property | Concrete vector | Mitigation |
+| --- | --- | --- | --- | --- |
+| S | Spoofing | Authenticity | A caller impersonates the telemetry bus and injects frames | Out of scope for v0; `mTLS`/HMAC on the ingest path is the future control |
+| T | Tampering | Integrity | Frame is modified in transit, or an actor crafts a malformed frame | CRC-16 per frame; signed firmware/artifacts in the release pipeline |
+| R | Repudiation | Non-repudiation | A rejection or ingest cannot be attributed | Structured counters in `/v1/stats`; audit logging is a follow-up |
+| I | Information Disclosure | Confidentiality | Diagnostics leak via overly detailed error bodies | Errors return only a status token (`too_short`, `bad_crc`, ...), never data |
+| D | Denial of Service | Availability | Flood of frames exhausts memory or CPU | Body length cap, max channel count, bounded store (`max_channels`), parser is O(n) with no allocation on attacker-controlled sizes |
+| E | Elevation of Privilege | Authorization | A diagnostic endpoint grants control over the store | Read-only vs. write endpoints are separated; no privileged endpoint exists yet |
+
+## The parser: the one boundary that must be airtight
+
+`ttg::parse_frame` is **total**: every input returns a `ParseResult`, never
+throws, never reads out of bounds. The guarantees come from:
+
+1. **Length before content** — every length field is checked against the actual
+   buffer before any bytes are read.
+2. **Upper bounds on everything** — `kMaxPayloadLen`, `kMaxChannels`.
+3. **No allocation sized by attacker input** — channel vector is `reserve`d to a
+   compile-time maximum.
+4. **CRC checked before semantic parsing** — malformed data is rejected early.
+
+Proof is not by review but by execution: unit tests, a `NeverThrowsOnArbitraryInput`
+stress test, and a libFuzzer harness in `tests/fuzz_frame_parser.cpp`.
+
+## Assumptions and out of scope
+
+- No authentication/authorization (single trusted segment; documented as future
+  work under IEC 62443-4-2 FR 1/FR 2).
+- No TLS termination in-process (expected to terminate at a proxy / service
+  mesh).
+- The channel store is volatile; there is no confidentiality requirement for
+  telemetry values.
+
+## Review triggers
+
+Re-open this model when: the wire format changes, a new endpoint is added, the
+service gains persistence or authentication, or the gateway is deployed outside
+a trusted network segment.

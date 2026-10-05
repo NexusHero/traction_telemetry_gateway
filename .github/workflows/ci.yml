@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  # Conan reads this to find the local profile. Nothing else relies on it.
+  CONAN_HOME: ${{ github.workspace }}/.conan2
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: pip install "conan>=2.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py') }}
+
+      - name: Detect default profile
+        run: conan profile detect --force
+
+      - name: Install dependencies
+        run: conan install . --build=missing -of build -s build_type=${{ env.BUILD_TYPE }}
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  sanitize:
+    name: ASan / UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: pip install "conan>=2.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-sanitize-${{ hashFiles('conanfile.py') }}
+
+      - run: conan profile detect --force
+      - run: conan install . --build=missing -of build -s build_type=Debug
+
+      - name: Configure (sanitizers)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+          -DTTG_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests under ASan/UBSan
+        run: ctest --test-dir build --output-on-failure
+
+  static-analysis:
+    name: SAST (clang-tidy + cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: pip install "conan>=2.0"
+
+      - name: Install analyzers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cppcheck
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-sast-${{ hashFiles('conanfile.py') }}
+
+      - run: conan profile detect --force
+      - run: conan install . --build=missing -of build -s build_type=${{ env.BUILD_TYPE }}
+
+      - name: Configure (export compile commands)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # clang-tidy and cppcheck run as reporting stages. To turn them into a
+      # hard gate, add --error-exitcode=1 (cppcheck) / -warnings-as-errors
+      # (clang-tidy) once the baseline of the codebase is clean -- see
+      # SECURITY.md for the "baseline" workflow.
+      - name: clang-tidy
+        continue-on-error: true
+        run: |
+          clang-tidy -p build src/*.cpp \
+            -checks="bugprone-*,cert-*,clang-analyzer-*,performance-*" 2>&1 | tee clang-tidy.txt
+
+      - name: cppcheck
+        continue-on-error: true
+        run: |
+          cppcheck --enable=warning,performance,portability \
+            --suppress=missingIncludeSystem --std=c++20 \
+            --inline-suppr -I include src include 2>&1 | tee cppcheck.txt
+
+      - name: Upload analyzer reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-reports
+          path: |
+            clang-tidy.txt
+            cppcheck.txt
+          if-no-files-found: ignore
+
+  secrets-scan:
+    name: Secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
