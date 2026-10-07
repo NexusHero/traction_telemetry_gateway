@@ -100,6 +100,64 @@ allocates **per iteration**. The interesting findings for this project:
 
 That is the concrete, measurable version of "keine Allokation im heißen Pfad".
 
+### SBOM (local)
+
+Conan has no SBOM command in core, so the pipeline uses `conan sbom:cyclonedx`
+from the official [conan-extensions](https://github.com/conan-io/conan-extensions)
+repo. The wrapper installs the extension and its `cyclonedx-python-lib`
+dependency on first run:
+
+```sh
+./scripts/sbom.sh                 # -> build/sbom.cdx.json (CycloneDX 1.4)
+./scripts/sbom.sh --scan          # ... and run grype against it
+```
+
+```powershell
+.\scripts\sbom.ps1               # same thing on Windows
+```
+
+The SBOM lists only what ships: `build_tests=False` drops gtest and
+`--no-build-requires` drops cmake, leaving the two runtime dependencies with
+their resolved recipe revisions:
+
+```
+pkg:conan/cpp-httplib@0.56.0?repository_url=https://center2.conan.io&rrev=2f12074...
+pkg:conan/nlohmann_json@3.12.0?repository_url=https://center2.conan.io&rrev=2d634ab...
+```
+
+Two properties of this output are worth knowing.
+
+**The CVE gate does not read this file.** The extension emits package URLs but
+no CPEs, and file-based scanners match C/C++ packages on CPEs - `pkg:conan/...`
+alone produces zero findings even for a package with known CVEs (measured
+against `openssl/1.1.1a`: 0 matches by purl, 59 once a CPE is present). So this
+SBOM is the component *inventory*, and the gate in `supply-chain.yml` is
+`conan audit scan`, which resolves CVEs against the Conan references
+themselves. `./scripts/sbom.sh --scan` runs grype for convenience, but treat a
+clean result from it as weak evidence.
+
+**The purls are not cache-stable.** When a recipe is downloaded in the same run,
+the extension appends `repository_url=`; when it comes from a warm cache, it
+does not. The same commit can therefore produce two slightly different purls.
+This is upstream behaviour, left unmassaged rather than patched over here.
+
+### CVE scanning (local)
+
+The CI gate uses `conan audit`, which is part of Conan core but needs a free
+token from [conan.io/audit/register](https://conan.io/audit/register) - stored as
+the repository secret `CONAN_AUDIT_TOKEN`. The token must be email-validated
+before it works; `conan audit provider auth` stores it without checking, so an
+invalid token shows up as a 403 on the first scan. Locally:
+
+```sh
+conan audit provider auth conancenter --token=<your_token>
+conan audit scan . --context host --severity-level 9.0 -s build_type=Release
+```
+
+`--severity-level 9.0` is the default (critical only) and matches the trivy gate
+on the image. `--context host` skips tool requires, which never reach the
+runtime image.
+
 ## HTTP API
 
 | Method | Path | Description |
@@ -123,7 +181,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
 | `ci.yml` | push / PR | Build & test (Ubuntu + macOS), ASan/UBSan, clang-tidy + cppcheck, gitleaks |
-| `supply-chain.yml` | push / PR / tag | SBOM (CycloneDX), grype CVE gate, distroless image build, trivy scan, cosign sign |
+| `supply-chain.yml` | push / PR / tag | SBOM (CycloneDX via Conan), `conan audit` CVE gate, distroless image build, trivy scan, cosign sign |
 | `fuzzing.yml` | nightly | libFuzzer on the parser, 15 minutes |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
 | `codeql.yml` | push / PR | CodeQL analysis (C++) |
