@@ -42,7 +42,7 @@ via crafted frames cause the parser or server to:
 | Secrets in the repository | `gitleaks` gate in CI |
 | Memory safety (own code) | ASan + UBSan test runs, libFuzzer on the parser |
 | Static analysis | clang-tidy, cppcheck, GitHub CodeQL |
-| Supply chain | Conan lockfile, SBOM (CycloneDX), `grype` CVE gate |
+| Supply chain | Conan lockfile, SBOM (CycloneDX from the Conan graph), `conan audit` CVE gate (CVSS >= 9.0) |
 | Container | distroless base, `trivy` image scan gate, `cosign` signing |
 
 ## Turning reporting into a gate
