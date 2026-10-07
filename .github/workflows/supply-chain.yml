@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # upload SARIF to code scanning
   packages: write          # publish image to GHCR
   id-token: write          # keyless signing
 
@@ -18,7 +17,7 @@ env:
 
 jobs:
   sbom-and-scan:
-    name: SBOM + dependency scan
+    name: SBOM + dependency CVE gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,35 +29,63 @@ jobs:
       - name: Install Conan
         run: pip install "conan>=2.0"
 
+      # CONAN_HOME is cached, so the sbom extension that scripts/sbom.sh
+      # installs on first run persists across runs too.
       - name: Cache Conan packages
         uses: actions/cache@v4
         with:
           path: ${{ env.CONAN_HOME }}
           key: conan-sbom-${{ hashFiles('conanfile.py') }}
 
-      - name: Install tools
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
       - name: Resolve dependency graph (conan.lock)
         run: |
           conan profile detect --force
           conan install . --build=missing -of build -s build_type=Release --lockfile-out=build/conan.lock
 
+      # Generated from the Conan graph via the official conan-extensions
+      # command - the same script developers run locally, so the SBOM in a
+      # release artifact and the one on a dev machine are produced identically.
       - name: Generate SBOM (CycloneDX)
-        run: syft dir:. -o cyclonedx-json=build/sbom.cdx.json
+        run: ./scripts/sbom.sh -o build/sbom.cdx.json
 
-      - name: Scan SBOM for vulnerabilities (gate = critical)
+      # The CVE gate deliberately does NOT read the SBOM above: the extension
+      # emits package URLs but no CPEs, and CPE is what file-based scanners
+      # match C/C++ packages on, so scanning it would pass unconditionally.
+      # `conan audit` resolves CVEs against the Conan references themselves.
+      #
+      # The provider needs a (free) token from https://conan.io/audit/register,
+      # which must be email-validated before it works. `provider auth` stores a
+      # token without checking it, so an invalid one surfaces as a 403 in the
+      # scan step below rather than here.
+      #
+      # Secrets are unavailable to pull requests from forks, where the gate is
+      # skipped with a warning rather than failing on something the contributor
+      # cannot fix. Anywhere else a missing token is a hard error: a silently
+      # skipped gate is worse than no gate.
+      - name: Authenticate CVE provider
+        id: auth
+        env:
+          CONAN_AUDIT_TOKEN: ${{ secrets.CONAN_AUDIT_TOKEN }}
+          IS_FORK_PR: ${{ github.event.pull_request.head.repo.fork == true }}
         run: |
-          grype sbom:build/sbom.cdx.json --fail-on critical -o json=build/grype.json
-          grype sbom:build/sbom.cdx.json -o sarif=build/grype.sarif
+          if [ -n "$CONAN_AUDIT_TOKEN" ]; then
+            conan audit provider auth conancenter --token="$CONAN_AUDIT_TOKEN"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_FORK_PR" = "true" ]; then
+            echo "::warning::CONAN_AUDIT_TOKEN unavailable to fork PRs - CVE gate skipped"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::CONAN_AUDIT_TOKEN is not set. Register at https://conan.io/audit/register and add it as the repository secret CONAN_AUDIT_TOKEN."
+            exit 1
+          fi
 
-      - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: build/grype.sarif
+      # Default severity threshold is CVSS >= 9.0, i.e. critical only, matching
+      # the trivy gate on the image below. --context host skips tool requires,
+      # which never reach the runtime image.
+      - name: Scan dependencies for CVEs (gate = critical)
+        if: steps.auth.outputs.enabled == 'true'
+        run: |
+          conan audit scan . --context host --severity-level 9.0 -s build_type=Release -f json --out-file build/conan-audit.json
 
       - name: Upload SBOM and reports
         if: always()
@@ -68,8 +95,7 @@ jobs:
           path: |
             build/sbom.cdx.json
             build/conan.lock
-            build/grype.json
-            build/grype.sarif
+            build/conan-audit.json
           if-no-files-found: ignore
 
   container:
