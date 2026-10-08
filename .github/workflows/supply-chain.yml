@@ -11,13 +11,20 @@ permissions:
   contents: read
   packages: write          # publish image to GHCR
   id-token: write          # keyless signing
+  attestations: write      # SLSA provenance via actions/attest-*
 
 env:
   CONAN_HOME: ${{ github.workspace }}/.conan2
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 4 + 7. Resolves the graph once and produces every artefact that
+  # describes it: the lockfile, the SBOM, the CVE verdict and the licence
+  # verdict. The container job consumes the same lockfile, so the image is
+  # provably built from the graph that was scanned here.
+  # ---------------------------------------------------------------------------
   sbom-and-scan:
-    name: SBOM + dependency CVE gate
+    name: SBOM + dependency CVE & licence gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,9 +51,16 @@ jobs:
 
       # Generated from the Conan graph via the official conan-extensions
       # command - the same script developers run locally, so the SBOM in a
-      # release artifact and the one on a dev machine are produced identically.
+      # release artefact and the one on a dev machine are produced identically.
       - name: Generate SBOM (CycloneDX)
         run: ./scripts/sbom.sh -o build/sbom.cdx.json
+
+      # Stage 4's other half. A CVE is a bug you can patch; a copyleft
+      # obligation you shipped unknowingly is not fixable after the fact, so the
+      # licence policy is a gate rather than a report. Default-deny, and an
+      # undeclared licence counts as a violation.
+      - name: Licence policy gate
+        run: python scripts/license_check.py --json-out build/licenses.json
 
       # The CVE gate deliberately does NOT read the SBOM above: the extension
       # emits package URLs but no CPEs, and CPE is what file-based scanners
@@ -87,22 +101,57 @@ jobs:
         run: |
           conan audit scan . --context host --severity-level 9.0 -s build_type=Release -f json --out-file build/conan-audit.json
 
+      # Collected into one directory so the uploaded artefact has a stable,
+      # flat layout. upload-artifact strips the longest common prefix of its
+      # inputs, which means the paths inside the artefact would otherwise
+      # change depending on which optional files exist.
+      - name: Collect evidence
+        if: always()
+        run: |
+          mkdir -p evidence
+          for file in build/sbom.cdx.json build/conan.lock build/conan-audit.json build/licenses.json; do
+            [ -f "$file" ] && cp "$file" evidence/
+          done
+          ls -la evidence/
+
       - name: Upload SBOM and reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-and-scan-results
-          path: |
-            build/sbom.cdx.json
-            build/conan.lock
-            build/conan-audit.json
+          name: dependency-evidence
+          path: evidence/
           if-no-files-found: ignore
 
+  # ---------------------------------------------------------------------------
+  # Stage 7 + 8. `needs:` is load-bearing in two ways: the image is built from
+  # the lockfile the job above scanned, and an image whose dependencies failed
+  # the CVE or licence gate is never built, let alone pushed.
+  # ---------------------------------------------------------------------------
   container:
     name: Container build, scan & sign
     runs-on: ubuntu-latest
+    needs: sbom-and-scan
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download dependency evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: dependency-evidence
+          path: evidence
+
+      # The Dockerfile reads conan.lock from the build context, so the image
+      # resolves exactly the revisions that were scanned rather than whatever
+      # ConanCenter serves at build time.
+      - name: Stage the lockfile into the build context
+        run: |
+          if [ ! -f evidence/conan.lock ]; then
+            echo "::error::conan.lock missing from the evidence artefact - refusing to build an unpinned image."
+            exit 1
+          fi
+          cp evidence/conan.lock ./conan.lock
+          echo "Image will be built from:"
+          head -20 conan.lock
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -140,14 +189,93 @@ jobs:
       - name: Scan image (gate = critical)
         run: trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
 
+      # Two SBOMs describe two different things and both matter. The Conan one
+      # (from the job above) lists the libraries this project chose; this one
+      # lists what is actually in the image, including the distroless base
+      # layer, which no dependency manifest mentions.
+      - name: Generate image SBOM (CycloneDX)
+        run: |
+          mkdir -p evidence
+          trivy image --format cyclonedx --output evidence/image-sbom.cdx.json ttg:ci
+          echo "image SBOM components: $(python -c "import json;print(len(json.load(open('evidence/image-sbom.cdx.json')).get('components',[])))")"
+
+      - name: Upload image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence
+          path: evidence/image-sbom.cdx.json
+          if-no-files-found: ignore
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Push and sign image (tags only)
+      # Signing and attestation only happen for tags: an unreleased commit has
+      # nothing to attest about, and signing every main build would fill the
+      # transparency log with artefacts nobody consumes.
+      - name: Push, sign and attest (tags only)
         if: startsWith(github.ref, 'refs/tags/')
+        id: push
         run: |
+          set -euo pipefail
+          digest=""
           for tag in ${{ steps.meta.outputs.tags }}; do
             docker tag ttg:ci "$tag"
             docker push "$tag"
-            cosign sign --yes "$tag"
+
+            # Sign and attest by digest, not by tag. A tag is mutable: signing
+            # "latest" says nothing about which image a consumer will pull,
+            # while a digest signature is bound to exact bytes.
+            digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$tag" | cut -d@ -f2)
+            ref="${tag%%:*}@${digest}"
+            echo "signing $ref"
+
+            cosign sign --yes "$ref"
+
+            # The SBOM becomes an in-toto attestation on the image rather than a
+            # loose file in an Actions artefact that expires in 90 days. This is
+            # the difference between "we generated an SBOM" and "a consumer can
+            # verify the SBOM for the image they are about to run".
+            #
+            # The image SBOM is the one attested here because it describes the
+            # thing the digest identifies. The Conan dependency SBOM describes
+            # the source build instead, and travels with the release bundle
+            # (see release.yml) where its subject is the binary.
+            cosign attest --yes --type cyclonedx \
+              --predicate evidence/image-sbom.cdx.json "$ref"
           done
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+
+      # SLSA build provenance: who built this image, from which commit, with
+      # which workflow. Verifiable with `gh attestation verify`.
+      - name: Attest build provenance (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verification instructions
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          image="${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}"
+          {
+            echo '### Signed image'
+            echo ''
+            echo '```sh'
+            echo "# signature"
+            echo "cosign verify $image \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo ''
+            echo "# SBOM attestation"
+            echo "cosign verify-attestation $image --type cyclonedx \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo ''
+            echo "# build provenance"
+            echo "gh attestation verify oci://$image -R ${{ github.repository }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

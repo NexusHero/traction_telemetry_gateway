@@ -1,0 +1,8 @@
+# clang-tidy / cppcheck findings accepted as pre-existing.
+# Format: <count><TAB><file><TAB><check>
+#
+# Regenerate from CI's uploaded reports with:
+#   scripts/sast_gate.py update clang-tidy.txt cppcheck.txt
+#
+# Lowering a count is always safe and always welcome. Raising one needs a
+# reason in the pull request that does it.
