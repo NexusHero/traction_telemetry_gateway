@@ -7,7 +7,7 @@
 
 namespace ttg {
 
-enum class ParseStatus {
+enum class ParseStatus : std::uint8_t {
     Ok,
     TooShort,
     BadMagic,

@@ -118,6 +118,14 @@ jobs:
           - sanitizer: thread
             label: TSan
             options: 'TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1'
+            # httplib's client resolves names with glibc's getaddrinfo_a, which
+            # runs the lookup on a thread glibc creates internally. TSan never
+            # sees that thread start, so its first malloc segfaults inside the
+            # TSan allocator (every test in tests/test_http_server.cpp). The
+            # blocking resolver keeps lookups on the calling thread. Only this
+            # job changes: the server never resolves with a timeout, and the
+            # shipped binary keeps the recipe default.
+            conan_options: '-o "cpp-httplib/*:use_non_blocking_getaddrinfo=False"'
     steps:
       - uses: actions/checkout@v7
 
@@ -135,7 +143,7 @@ jobs:
           key: conan-san-${{ matrix.sanitizer }}-${{ hashFiles('conanfile.py') }}
 
       - run: conan profile detect --force
-      - run: conan install . --build=missing -of build -s build_type=Debug
+      - run: conan install . --build=missing -of build -s build_type=Debug ${{ matrix.conan_options }}
 
       - name: Configure (TTG_SANITIZER=${{ matrix.sanitizer }})
         run: >

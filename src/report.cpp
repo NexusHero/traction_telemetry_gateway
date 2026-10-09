@@ -17,10 +17,8 @@ nlohmann::json to_json(const Frame& frame) {
         channels.push_back(to_json(value));
     }
     return nlohmann::json{
-        {"msg_type", to_string(frame.msg_type)},
-        {"sequence", frame.sequence},
-        {"timestamp_ms", frame.timestamp_ms},
-        {"channel_count", frame.channels.size()},
+        {"msg_type", to_string(frame.msg_type)}, {"sequence", frame.sequence},
+        {"timestamp_ms", frame.timestamp_ms},    {"channel_count", frame.channels.size()},
         {"channels", std::move(channels)},
     };
 }

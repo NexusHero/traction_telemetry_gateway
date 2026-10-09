@@ -17,8 +17,7 @@ std::uint16_t read_u16(std::span<const std::uint8_t> d, std::size_t off) noexcep
 std::uint32_t read_u32(std::span<const std::uint8_t> d, std::size_t off) noexcept {
     return (static_cast<std::uint32_t>(d[off]) << 24U) |
            (static_cast<std::uint32_t>(d[off + 1]) << 16U) |
-           (static_cast<std::uint32_t>(d[off + 2]) << 8U) |
-           static_cast<std::uint32_t>(d[off + 3]);
+           (static_cast<std::uint32_t>(d[off + 2]) << 8U) | static_cast<std::uint32_t>(d[off + 3]);
 }
 
 std::uint64_t read_u64(std::span<const std::uint8_t> d, std::size_t off) noexcept {
@@ -31,10 +30,10 @@ std::uint64_t read_u64(std::span<const std::uint8_t> d, std::size_t off) noexcep
 
 bool is_known_msg_type(std::uint8_t raw) noexcept {
     switch (static_cast<MsgType>(raw)) {
-        case MsgType::Telemetry:
-        case MsgType::Heartbeat:
-        case MsgType::Fault:
-            return true;
+    case MsgType::Telemetry:
+    case MsgType::Heartbeat:
+    case MsgType::Fault:
+        return true;
     }
     return false;
 }
@@ -143,46 +142,46 @@ ParseResult parse_frame(std::span<const std::uint8_t> data) {
 
 const char* to_string(ParseStatus status) noexcept {
     switch (status) {
-        case ParseStatus::Ok:
-            return "ok";
-        case ParseStatus::TooShort:
-            return "too_short";
-        case ParseStatus::BadMagic:
-            return "bad_magic";
-        case ParseStatus::UnsupportedVersion:
-            return "unsupported_version";
-        case ParseStatus::UnknownMessageType:
-            return "unknown_message_type";
-        case ParseStatus::BadPayloadLength:
-            return "bad_payload_length";
-        case ParseStatus::TooManyChannels:
-            return "too_many_channels";
-        case ParseStatus::BadChannelEntry:
-            return "bad_channel_entry";
-        case ParseStatus::BadCrc:
-            return "bad_crc";
+    case ParseStatus::Ok:
+        return "ok";
+    case ParseStatus::TooShort:
+        return "too_short";
+    case ParseStatus::BadMagic:
+        return "bad_magic";
+    case ParseStatus::UnsupportedVersion:
+        return "unsupported_version";
+    case ParseStatus::UnknownMessageType:
+        return "unknown_message_type";
+    case ParseStatus::BadPayloadLength:
+        return "bad_payload_length";
+    case ParseStatus::TooManyChannels:
+        return "too_many_channels";
+    case ParseStatus::BadChannelEntry:
+        return "bad_channel_entry";
+    case ParseStatus::BadCrc:
+        return "bad_crc";
     }
     return "unknown";
 }
 
 const char* to_string(MsgType type) noexcept {
     switch (type) {
-        case MsgType::Telemetry:
-            return "telemetry";
-        case MsgType::Heartbeat:
-            return "heartbeat";
-        case MsgType::Fault:
-            return "fault";
+    case MsgType::Telemetry:
+        return "telemetry";
+    case MsgType::Heartbeat:
+        return "heartbeat";
+    case MsgType::Fault:
+        return "fault";
     }
     return "unknown";
 }
 
 const char* to_string(ValueType type) noexcept {
     switch (type) {
-        case ValueType::Int32:
-            return "int32";
-        case ValueType::Float32:
-            return "float32";
+    case ValueType::Int32:
+        return "int32";
+    case ValueType::Float32:
+        return "float32";
     }
     return "unknown";
 }
