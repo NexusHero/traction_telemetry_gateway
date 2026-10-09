@@ -1,9 +1,17 @@
 version: 2
+
+# Every ecosystem waits 7 days before proposing a new release. Compromised
+# releases (a hijacked maintainer account, a moved tag) are usually caught and
+# yanked within days; adopting on day 0 means adopting the attack. Actions are
+# pinned by commit SHA, and Dependabot rewrites those pins and their version
+# comments itself.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "ci(deps)"
 
@@ -11,6 +19,8 @@ updates:
     directory: "/docker"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(docker)"
     # The builder must stay on the same glibc generation as the distroless
