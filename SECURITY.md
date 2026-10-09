@@ -13,7 +13,9 @@ long-term support window.
 
 Do **not** open a public issue for a vulnerability.
 
-Email the maintainer directly with:
+Report it privately through GitHub:
+**[Report a vulnerability](https://github.com/NexusHero/traction_telemetry_gateway/security/advisories/new)**
+(private vulnerability reporting is enabled for this repository). Include:
 
 - A description of the issue
 - The affected component (parser, HTTP layer, build pipeline, ...)
@@ -41,7 +43,7 @@ via crafted frames cause the parser or server to:
 | --- | --- |
 | Formatting / lint drift | `pre-commit` hooks locally, `clang-format` gate in CI |
 | Secrets in the repository | `gitleaks` gate in CI, over the full history |
-| CI/CD pipeline integrity | actions pinned by SHA, tools by checksum, images by digest; per-job least privilege; `zizmor` gate on the workflows; Dependabot cooldown |
+| CI/CD pipeline integrity | actions pinned by SHA, tools by checksum, Python tooling by hash, images by digest; OpenSSF Scorecard published weekly; per-job least privilege; `zizmor` gate on the workflows; Dependabot cooldown |
 | Memory safety (own code) | ASan + UBSan test runs, libFuzzer on the parser (cumulative corpus) |
 | Data races | ThreadSanitizer over `tests/test_concurrency.cpp` |
 | Static analysis | clang-tidy, cppcheck (regression gate vs. `.sast-baseline.txt`), GitHub CodeQL |

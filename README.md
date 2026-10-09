@@ -1,5 +1,7 @@
 # Traction Telemetry Gateway
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/NexusHero/traction_telemetry_gateway/badge)](https://scorecard.dev/viewer/?uri=github.com/NexusHero/traction_telemetry_gateway)
+
 A small, hardened **C++20 REST service** that ingests binary telemetry frames
 from a (fictional) traction bus, validates them at a well-defined trust
 boundary, and exposes the latest values as JSON.
@@ -172,8 +174,10 @@ That is the concrete, measurable version of "keine Allokation im heißen Pfad".
 
 Conan has no SBOM command in core, so the pipeline uses `conan sbom:cyclonedx`
 from the official [conan-extensions](https://github.com/conan-io/conan-extensions)
-repo. The wrapper installs the extension and its `cyclonedx-python-lib`
-dependency on first run:
+repo, pinned to a commit in `scripts/sbom.sh` (bump `EXTENSIONS_COMMIT` there
+and in `sbom.ps1` deliberately). The wrapper installs that revision on first
+run, or when the Conan home holds a different one; `cyclonedx-python-lib` comes
+from `ci/requirements.txt`:
 
 ```sh
 ./scripts/sbom.sh                 # -> build/sbom.cdx.json (CycloneDX 1.4)
@@ -391,6 +395,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
 | `codeql.yml` | push / PR / weekly | CodeQL analysis (C++) |
+| `scorecard.yml` | push to main / weekly | OpenSSF Scorecard: published score (badge), findings uploaded to code scanning as SARIF |
 
 ### Hardening the pipeline itself
 
@@ -400,8 +405,10 @@ same treatment as source code:
 - **Every action is pinned by commit SHA**, with the release in a trailing
   comment (`@3d3c42e… # v7.0.1`). A tag can be moved by whoever controls the
   action's repository; a SHA cannot. Dependabot updates the pins.
-- **Downloaded tools are pinned by version and SHA-256** recorded in the
-  workflow (trivy), and container images by digest (ZAP).
+- **Downloaded tools are pinned by version and SHA-256** (trivy, grype), Python
+  tooling by hash (`ci/requirements.txt`, installed with `--require-hashes` in
+  CI and the image build), and container images by digest - ZAP, Schemathesis
+  and both Dockerfile base images.
 - **Least privilege per job.** Workflows default to `contents: read`; write
   scopes sit on the single job that needs them.
 - **No persisted checkout credentials** (`persist-credentials: false`), no

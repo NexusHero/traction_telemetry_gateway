@@ -16,7 +16,12 @@
 # was needed to produce it.
 set -euo pipefail
 
-EXTENSIONS_REPO="https://github.com/conan-io/conan-extensions.git"
+# Pinned by commit. The extension is code that runs inside the SBOM job and
+# shapes the SBOM that gets attested, so it is treated like any other
+# dependency: a fixed revision, bumped deliberately - never "whatever the
+# default branch holds today". The archive of a commit is addressed by its SHA.
+EXTENSIONS_COMMIT="d2c9d79e5c6293bee21b3a21f60c34ec0a88f6b7"
+EXTENSIONS_ARCHIVE="https://github.com/conan-io/conan-extensions/archive/${EXTENSIONS_COMMIT}.zip"
 CYCLONEDX_LIB="cyclonedx-python-lib>=5.0.0,<6"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,10 +61,13 @@ pip_install_cyclonedx() {
   return 1
 }
 
-extension_file="$(conan config home)/extensions/commands/sbom/cmd_cyclonedx.py"
-if [[ ! -f "$extension_file" ]]; then
-  echo ">> installing conan sbom extension (first run only)"
-  conan config install "$EXTENSIONS_REPO"
+# The marker records which commit is installed, so a Conan home holding a
+# different revision (an older run, a manual install) is brought to the pin.
+ref_marker="$(conan config home)/extensions/.conan-extensions-commit"
+if [[ "$(cat "$ref_marker" 2>/dev/null)" != "$EXTENSIONS_COMMIT" ]]; then
+  echo ">> installing conan sbom extension @ ${EXTENSIONS_COMMIT:0:12}"
+  conan config install "$EXTENSIONS_ARCHIVE" -sf "conan-extensions-${EXTENSIONS_COMMIT}"
+  echo "$EXTENSIONS_COMMIT" > "$ref_marker"
 fi
 
 if ! sbom_usable; then
