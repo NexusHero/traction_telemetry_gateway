@@ -46,7 +46,7 @@ via crafted frames cause the parser or server to:
 | Data races | ThreadSanitizer over `tests/test_concurrency.cpp` |
 | Static analysis | clang-tidy, cppcheck (regression gate vs. `.sast-baseline.txt`), GitHub CodeQL |
 | Test adequacy | coverage reported per run and per release — reported, never gated |
-| Supply chain (CVE) | Conan lockfile, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
+| Supply chain (CVE) | committed `conan.lock` (enforced in every build), Renovate for Conan updates, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
 | Supply chain (licence) | `scripts/license_check.py`, permissive allowlist, default-deny |
 | Container | distroless base, built from the scanned lockfile, `trivy` gate, image SBOM |
 | Running service (DAST) | ZAP API scan of the container against `docs/openapi.yaml`, gate vs. `.zap/rules.tsv`; security headers asserted in `tests/test_http_server.cpp` |
