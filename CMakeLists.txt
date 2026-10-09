@@ -18,6 +18,8 @@ option(TTG_BUILD_TESTS "Build unit tests" ON)
 option(TTG_BUILD_BENCHMARKS "Build the Google Benchmark suite" OFF)
 option(TTG_ENABLE_FUZZING "Build the libFuzzer harness (Clang + libFuzzer only)" OFF)
 option(TTG_ENABLE_COVERAGE "Instrument for line/branch coverage (gcov/llvm-cov)" OFF)
+option(TTG_HARDENING "Compile and link with exploit mitigations (Linux only)" ON)
+option(TTG_WARNINGS_AS_ERRORS "Turn compiler warnings into errors (CI sets this)" OFF)
 
 # One sanitizer at a time, by design: ASan and TSan use incompatible runtimes
 # and cannot be linked into the same binary. Modelling this as a single-valued
@@ -30,6 +32,12 @@ set_property(CACHE TTG_SANITIZER PROPERTY STRINGS off address thread)
 find_package(Threads REQUIRED)
 
 set(TTG_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
+# Off by default so a newer compiler on a developer's machine cannot break their
+# build over a warning that did not exist when the code was written. CI turns it
+# on, against pinned compilers, which is where a new warning should surface.
+if(TTG_WARNINGS_AS_ERRORS)
+    list(APPEND TTG_WARNINGS -Werror)
+endif()
 
 set(TTG_SANITIZE_FLAGS "")
 if(TTG_SANITIZER STREQUAL "address")
@@ -61,7 +69,53 @@ if(TTG_ENABLE_COVERAGE)
     set(TTG_COVERAGE_FLAGS --coverage -fprofile-update=atomic -g -O0)
 endif()
 
-# Every target gets both sets; exactly one of them is ever non-empty.
+# ---------------------------------------------------------------------------
+# Exploit mitigations for the shipped binary. The parser's job is to survive
+# hostile input; these make the failure mode of a parser bug that slips through
+# anyway a crash rather than code execution:
+#   _FORTIFY_SOURCE=3        bounds-checked libc calls where the size is known
+#   stack-protector-strong   stack canaries
+#   stack-clash-protection   no jumping the guard page with a large frame
+#   cf-protection / branch-protection   CET (x86-64) / PAC+BTI (AArch64)
+#   PIE + full RELRO + BIND_NOW + non-exec stack   ASLR and a read-only GOT
+# scripts/check_hardening.sh verifies the result on the built ELF, because a
+# flag that a toolchain silently ignores is indistinguishable from one it
+# applied.
+#
+# Linux only: the target is a Linux box and the -z linker options are GNU ld /
+# lld syntax that Apple's linker rejects. Skipped for sanitizer, coverage and
+# fuzzing builds, which exist to find bugs, not to ship: FORTIFY's checked libc
+# calls overlap ASan's interceptors, and both distort coverage.
+# ---------------------------------------------------------------------------
+set(TTG_HARDEN_COMPILE "")
+set(TTG_HARDEN_LINK "")
+if(TTG_HARDENING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TTG_SANITIZER STREQUAL "off"
+   AND NOT TTG_ENABLE_COVERAGE AND NOT TTG_ENABLE_FUZZING)
+    # FORTIFY needs optimisation to see object sizes and warns without it, which
+    # -Werror would turn into a failed Debug build. -U first: Ubuntu's GCC
+    # predefines a level, and redefining it is itself a warning.
+    set(TTG_HARDEN_COMPILE
+        "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3>"
+        -fstack-protector-strong
+        -fstack-clash-protection)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        list(APPEND TTG_HARDEN_COMPILE -fcf-protection=full)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|armv8)$")
+        list(APPEND TTG_HARDEN_COMPILE -mbranch-protection=standard)
+    endif()
+    set(TTG_HARDEN_LINK -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+
+    # PIE through CMake rather than raw -fPIE/-pie, so static libraries are
+    # compiled position-independent too and nothing links non-PIC objects into
+    # a PIE.
+    include(CheckPIESupported)
+    check_pie_supported()
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
+# Every target gets both instrumentation sets; exactly one of them is ever
+# non-empty. Hardening is kept apart because its compile and link halves differ,
+# and it is empty whenever either instrumentation set is not.
 set(TTG_INSTRUMENTATION ${TTG_SANITIZE_FLAGS} ${TTG_COVERAGE_FLAGS})
 
 # ---------------------------------------------------------------------------
@@ -70,8 +124,8 @@ set(TTG_INSTRUMENTATION ${TTG_SANITIZE_FLAGS} ${TTG_COVERAGE_FLAGS})
 # ---------------------------------------------------------------------------
 add_library(ttg_parser STATIC src/parser.cpp)
 target_include_directories(ttg_parser PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_options(ttg_parser PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
-target_link_options(ttg_parser PUBLIC ${TTG_INSTRUMENTATION})
+target_compile_options(ttg_parser PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
+target_link_options(ttg_parser PUBLIC ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
 
 # ---------------------------------------------------------------------------
 # Core (store + JSON serialization). Needs nlohmann_json.
@@ -84,8 +138,8 @@ if(TTG_BUILD_SERVER OR TTG_BUILD_TESTS OR TTG_BUILD_BENCHMARKS)
         src/report.cpp)
     target_include_directories(ttg_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(ttg_core PUBLIC ttg_parser nlohmann_json::nlohmann_json)
-    target_compile_options(ttg_core PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
-    target_link_options(ttg_core PUBLIC ${TTG_INSTRUMENTATION})
+    target_compile_options(ttg_core PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
+    target_link_options(ttg_core PUBLIC ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -99,16 +153,16 @@ if(TTG_BUILD_SERVER OR TTG_BUILD_TESTS)
     add_library(ttg_http STATIC src/http_server.cpp)
     target_include_directories(ttg_http PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(ttg_http PUBLIC ttg_core PRIVATE httplib::httplib Threads::Threads)
-    target_compile_options(ttg_http PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
-    target_link_options(ttg_http PUBLIC ${TTG_INSTRUMENTATION})
+    target_compile_options(ttg_http PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
+    target_link_options(ttg_http PUBLIC ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
 endif()
 
 if(TTG_BUILD_SERVER)
     add_executable(ttg_server src/main.cpp)
 
     target_link_libraries(ttg_server PRIVATE ttg_http Threads::Threads)
-    target_compile_options(ttg_server PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
-    target_link_options(ttg_server PRIVATE ${TTG_INSTRUMENTATION})
+    target_compile_options(ttg_server PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
+    target_link_options(ttg_server PRIVATE ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -129,8 +183,8 @@ if(TTG_BUILD_TESTS)
     # resolves at link time against pthread, and a build without it fails (or,
     # worse on older toolchains, aborts at run time).
     target_link_libraries(ttg_tests PRIVATE ttg_http httplib::httplib GTest::gtest_main Threads::Threads)
-    target_compile_options(ttg_tests PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
-    target_link_options(ttg_tests PRIVATE ${TTG_INSTRUMENTATION})
+    target_compile_options(ttg_tests PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
+    target_link_options(ttg_tests PRIVATE ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
 
     include(GoogleTest)
     # The concurrency tests spin up threads and hammer a mutex; under TSan they
@@ -153,7 +207,10 @@ if(TTG_BUILD_BENCHMARKS)
 
     target_include_directories(ttg_benchmarks PRIVATE benchmarks tests)
     target_link_libraries(ttg_benchmarks PRIVATE ttg_core benchmark::benchmark_main)
-    target_compile_options(ttg_benchmarks PRIVATE ${TTG_WARNINGS})
+    # Benchmarks measure the shipped configuration, so they get the hardening
+    # flags too: a mitigation's cost is part of what the numbers should show.
+    target_compile_options(ttg_benchmarks PRIVATE ${TTG_WARNINGS} ${TTG_HARDEN_COMPILE})
+    target_link_options(ttg_benchmarks PRIVATE ${TTG_HARDEN_LINK})
 endif()
 
 # ---------------------------------------------------------------------------

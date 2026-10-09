@@ -42,16 +42,22 @@ RUN conan profile detect --force \
 COPY CMakeLists.txt ./
 COPY include ./include
 COPY src ./src
+COPY scripts/check_hardening.sh ./scripts/
 
 # libstdc++ and libgcc are linked statically so the runtime image needs
 # nothing beyond glibc (see stage 2). Both are covered by the GCC Runtime
 # Library Exception, which permits static linking into any binary.
+#
+# The hardening check runs here, not only in CI, because Debian's GCC applies
+# fewer mitigations by default than the Ubuntu runner's: a check that passes on
+# the runner says nothing about the binary this stage produces.
 RUN cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
         -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
         -DTTG_BUILD_TESTS=OFF \
-    && cmake --build build --target ttg_server
+    && cmake --build build --target ttg_server \
+    && scripts/check_hardening.sh build/ttg_server
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime. A distroless image keeps the attack surface minimal - no
