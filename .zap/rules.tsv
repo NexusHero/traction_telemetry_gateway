@@ -1,0 +1,10 @@
+# ZAP rule overrides for the DAST gate in supply-chain.yml.
+#
+# Format: <rule id><TAB><IGNORE|INFO|WARN|FAIL><TAB><reason>
+# Rule ids: https://www.zaproxy.org/docs/alerts/
+#
+# The gate fails on every WARN and FAIL, so this file is the list of findings
+# accepted on purpose - the DAST counterpart of .sast-baseline.txt. Every line
+# needs a reason, and removing a line is always safe. It is empty because the
+# scan is clean: missing security headers were fixed in the server instead of
+# being ignored here.

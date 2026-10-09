@@ -26,7 +26,7 @@ skip).
 | S | Spoofing | Authenticity | A caller impersonates the telemetry bus and injects frames | Out of scope for v0; `mTLS`/HMAC on the ingest path is the future control |
 | T | Tampering | Integrity | Frame is modified in transit, or an actor crafts a malformed frame | CRC-16 per frame; signed firmware/artifacts in the release pipeline |
 | R | Repudiation | Non-repudiation | A rejection or ingest cannot be attributed | Structured counters in `/v1/stats`; audit logging is a follow-up |
-| I | Information Disclosure | Confidentiality | Diagnostics leak via overly detailed error bodies | Errors return only a status token (`too_short`, `bad_crc`, ...), never data |
+| I | Information Disclosure | Confidentiality | Diagnostics leak via overly detailed error bodies; a browser on another origin embeds or caches responses | Errors return only a status token (`too_short`, `bad_crc`, ...), never data; `no-store`, deny-all CSP, CORP `same-origin`, `nosniff` on every response, checked by the ZAP scan |
 | D | Denial of Service | Availability | Flood of frames exhausts memory or CPU | Body length cap, max channel count, bounded store (`max_channels`), parser is O(n) with no allocation on attacker-controlled sizes |
 | E | Elevation of Privilege | Authorization | A diagnostic endpoint grants control over the store | Read-only vs. write endpoints are separated; no privileged endpoint exists yet |
 

@@ -248,6 +248,31 @@ Escape hatches are explicit and leave a trace in the diff:
 `--extra-allow MPL-2.0` extends the policy, `--waive some-pkg/1.2.3` exempts one
 package.
 
+### DAST (local)
+
+The running image is scanned with [ZAP](https://www.zaproxy.org/)'s API scan.
+A JSON API has no links to crawl, so ZAP learns the endpoints from
+`docs/openapi.yaml` - add new routes there in the same change that adds them to
+the server, or they are never scanned.
+
+```sh
+docker build -f docker/Dockerfile -t ttg:ci .
+docker network create dast
+docker run -d --rm --name ttg --network dast ttg:ci
+mkdir -p build/zap && cp docs/openapi.yaml .zap/rules.tsv build/zap/ && chmod -R a+rwX build/zap
+docker run --rm --network dast -v "$PWD/build/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:2.17.0 \
+  zap-api-scan.py -t /zap/wrk/openapi.yaml -f openapi -O http://ttg:8080 -c rules.tsv -r zap-report.html
+```
+
+Mount a directory under your home on Colima / Docker Desktop for macOS; `/tmp`
+is not shared with the VM. The gate fails on any WARN or FAIL that
+`.zap/rules.tsv` does not explicitly accept, which is the DAST counterpart of
+`.sast-baseline.txt`. The ZAP image is pinned because new ZAP releases add rules.
+
+ZAP does not meaningfully test `POST /v1/frames`: its active rules attack named
+parameters, and a binary body has none. The frame parser is covered by
+libFuzzer instead; ZAP covers the HTTP layer around it.
+
 ### Static analysis baseline
 
 `clang-tidy` and `cppcheck` run as a **gate on regressions**, not on absolute
@@ -285,6 +310,11 @@ request that does it.
 | `GET` | `/healthz` | Liveness. |
 | `GET` | `/readyz` | Readiness. |
 
+The machine-readable contract is `docs/openapi.yaml`. Every response carries
+`Cache-Control: no-store`, a deny-all `Content-Security-Policy`,
+`Cross-Origin-Resource-Policy: same-origin`, `X-Content-Type-Options: nosniff`
+and `X-Frame-Options: DENY`, error responses included.
+
 ## Wire format
 
 Documented in `include/ttg/frame.hpp`. Big-endian, CRC-16/CCITT-FALSE:
@@ -304,7 +334,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | 3 | SAST | `ci.yml` → `static-analysis`, `codeql.yml` | finding beyond `.sast-baseline.txt` fails |
 | 4 | SCA / supply chain | `supply-chain.yml` → `sbom-and-scan` | CVSS ≥ 9.0 fails; licence allowlist, default-deny |
 | 5 | Build & test | `ci.yml` → `build-and-test`, `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; coverage reported only |
-| 6 | Dynamic / fuzzing | `fuzzing.yml` (nightly, cumulative corpus) | any crash reproducer fails |
+| 6 | Dynamic / fuzzing / DAST | `fuzzing.yml` (nightly, cumulative corpus), `supply-chain.yml` → `container` (ZAP API scan) | any crash reproducer fails; any ZAP warning beyond `.zap/rules.tsv` fails |
 | 7 | SBOM & signing | `supply-chain.yml` → `container`, `release.yml` | — (produces SBOMs, signatures, provenance) |
 | 8 | Gate & release | all of the above + `release.yml` | every gate above; release carries the evidence |
 
@@ -313,7 +343,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
 | `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks |
-| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image built **from the scanned lockfile**, trivy scan, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image built **from the scanned lockfile**, trivy scan, **ZAP API scan (DAST)**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
 | `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
 | `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
