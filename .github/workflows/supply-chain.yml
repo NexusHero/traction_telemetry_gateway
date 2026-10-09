@@ -40,7 +40,7 @@ jobs:
       # extension is a small download, so a cold start costs seconds.
       - name: Resolve dependency graph (conan.lock)
         run: |
-          conan install . --build=missing -of build -s build_type=Release --lockfile-out=build/conan.lock
+          conan install . --build=missing -of build -s build_type=Release --lockfile=conan.lock --lockfile-out=build/conan.lock
 
       # Generated from the Conan graph via the official conan-extensions
       # command - the same script developers run locally, so the SBOM in a

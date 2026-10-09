@@ -60,6 +60,27 @@ RUN cmake -S . -B build -G Ninja \
     && scripts/check_hardening.sh build/ttg_server
 
 # ---------------------------------------------------------------------------
+# Stage 1b: test. The unit tests, built by the compiler and against the locked
+# graph that built the shipped binary - not by whichever compiler a CI runner
+# happens to have. Only built on request (`--target test`, see release.yml):
+# BuildKit skips stages the requested target does not depend on, so a normal
+# image build never pays for it, and the runtime stage below never sees gtest.
+# ---------------------------------------------------------------------------
+FROM build AS test
+
+RUN conan install . --lockfile=conan.lock --build=missing -of build-test \
+         -s build_type=Release -o build_tests=True
+
+COPY tests ./tests
+RUN cmake -S . -B build-test -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=build-test/conan_toolchain.cmake \
+        -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+        -DTTG_WARNINGS_AS_ERRORS=ON \
+    && cmake --build build-test \
+    && ctest --test-dir build-test --output-on-failure
+
+# ---------------------------------------------------------------------------
 # Stage 2: runtime. A distroless image keeps the attack surface minimal - no
 # shell, no package manager, no unused tooling.
 #
