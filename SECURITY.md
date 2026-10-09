@@ -48,6 +48,7 @@ via crafted frames cause the parser or server to:
 | Supply chain (CVE) | Conan lockfile, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
 | Supply chain (licence) | `scripts/license_check.py`, permissive allowlist, default-deny |
 | Container | distroless base, built from the scanned lockfile, `trivy` gate, image SBOM |
+| Running service (DAST) | ZAP API scan of the container against `docs/openapi.yaml`, gate vs. `.zap/rules.tsv`; security headers asserted in `tests/test_http_server.cpp` |
 | Artefact integrity | `cosign` signature by digest, SBOM attestation, SLSA provenance |
 | Auditability | per-release evidence bundle with the output of every gate |
 

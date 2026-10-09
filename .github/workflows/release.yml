@@ -283,6 +283,7 @@ jobs:
             echo "| 4 | licence policy | permissive allowlist, default-deny |"
             echo "| 5 | ctest, ASan/UBSan, TSan | any failure fails |"
             echo "| 6 | libFuzzer (nightly) | any reproducer fails |"
+            echo "| 6 | ZAP API scan (DAST) | any warning beyond \`.zap/rules.tsv\` fails |"
             echo "| 7 | trivy image scan | CRITICAL fails |"
             echo ""
             echo "Coverage is reported, not gated:"

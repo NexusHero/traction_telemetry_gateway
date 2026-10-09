@@ -25,9 +25,27 @@ TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store)
     // also reject oversized frames, but refusing early is cheaper.
     server_->set_payload_max_length(kHeaderSize + kMaxPayloadLen + kCrcSize + 1);
 
+    // The API-relevant subset of the OWASP REST Security Cheat Sheet headers,
+    // plus CORP, which stops a browser page on another origin from embedding
+    // responses (ZAP rule 90004).
+    // Every response is JSON for a machine client, so nothing should be
+    // cached, sniffed into another type, framed or allowed to load content.
+    // Default headers are copied into the response before the request line is
+    // even parsed, so 400s for malformed requests and 404s carry them too.
+    // HSTS is absent on purpose: TLS terminates in front of the process (see
+    // docs/threat-model.md), and HSTS over plain HTTP is ignored by clients.
+    server_->set_default_headers({
+        {"Cache-Control", "no-store"},
+        {"Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"},
+        {"Cross-Origin-Resource-Policy", "same-origin"},
+        {"X-Content-Type-Options", "nosniff"},
+        {"X-Frame-Options", "DENY"},
+    });
+
     server_->Post("/v1/frames", [this](const httplib::Request& req, httplib::Response& res) {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(req.body.data());
-        const ParseResult result = parse_frame(std::span<const std::uint8_t>(bytes, req.body.size()));
+        const ParseResult result =
+            parse_frame(std::span<const std::uint8_t>(bytes, req.body.size()));
         if (!result.ok()) {
             store_.record_rejected();
             res.status = 400;
@@ -68,6 +86,15 @@ TelemetryHttpServer::~TelemetryHttpServer() { stop(); }
 bool TelemetryHttpServer::listen(const std::string& host, int port) {
     return server_->listen(host, port);
 }
+
+int TelemetryHttpServer::bind(const std::string& host, int port) {
+    if (port == 0) {
+        return server_->bind_to_any_port(host);
+    }
+    return server_->bind_to_port(host, port) ? port : -1;
+}
+
+bool TelemetryHttpServer::serve() { return server_->listen_after_bind(); }
 
 void TelemetryHttpServer::stop() {
     if (server_) {

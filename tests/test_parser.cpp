@@ -114,8 +114,8 @@ TEST(Parser, UnknownValueTypeRejected) {
     // build_frame_raw compute the checksum over it.
     std::vector<std::uint8_t> payload(ttg::kChannelEntrySize, 0);
     payload[0] = 0x00;
-    payload[1] = 0x01;   // channel_id = 1
-    payload[2] = 0x7F;   // invalid value_type
+    payload[1] = 0x01;  // channel_id = 1
+    payload[2] = 0x7F;  // invalid value_type
     const auto bytes = build_frame_raw(MsgType::Telemetry, 1, 0, payload);
     EXPECT_EQ(ttg::parse_frame(bytes).status, ParseStatus::BadChannelEntry);
 }

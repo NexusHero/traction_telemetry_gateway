@@ -91,14 +91,22 @@ endif()
 # ---------------------------------------------------------------------------
 # REST server
 # ---------------------------------------------------------------------------
-if(TTG_BUILD_SERVER)
+# The HTTP layer is a library of its own so the tests can exercise it in
+# process; the executable is just main() on top.
+if(TTG_BUILD_SERVER OR TTG_BUILD_TESTS)
     find_package(httplib CONFIG REQUIRED)
 
-    add_executable(ttg_server
-        src/main.cpp
-        src/http_server.cpp)
+    add_library(ttg_http STATIC src/http_server.cpp)
+    target_include_directories(ttg_http PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(ttg_http PUBLIC ttg_core PRIVATE httplib::httplib Threads::Threads)
+    target_compile_options(ttg_http PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
+    target_link_options(ttg_http PUBLIC ${TTG_INSTRUMENTATION})
+endif()
 
-    target_link_libraries(ttg_server PRIVATE ttg_core httplib::httplib Threads::Threads)
+if(TTG_BUILD_SERVER)
+    add_executable(ttg_server src/main.cpp)
+
+    target_link_libraries(ttg_server PRIVATE ttg_http Threads::Threads)
     target_compile_options(ttg_server PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
     target_link_options(ttg_server PRIVATE ${TTG_INSTRUMENTATION})
 endif()
@@ -114,12 +122,13 @@ if(TTG_BUILD_TESTS)
         tests/test_parser.cpp
         tests/test_store.cpp
         tests/test_report.cpp
-        tests/test_concurrency.cpp)
+        tests/test_concurrency.cpp
+        tests/test_http_server.cpp)
 
     # Threads::Threads is needed for test_concurrency.cpp: on Linux std::thread
     # resolves at link time against pthread, and a build without it fails (or,
     # worse on older toolchains, aborts at run time).
-    target_link_libraries(ttg_tests PRIVATE ttg_core GTest::gtest_main Threads::Threads)
+    target_link_libraries(ttg_tests PRIVATE ttg_http httplib::httplib GTest::gtest_main Threads::Threads)
     target_compile_options(ttg_tests PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION})
     target_link_options(ttg_tests PRIVATE ${TTG_INSTRUMENTATION})
 
