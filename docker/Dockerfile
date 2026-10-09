@@ -38,17 +38,27 @@ COPY CMakeLists.txt ./
 COPY include ./include
 COPY src ./src
 
+# libstdc++ and libgcc are linked statically so the runtime image needs
+# nothing beyond glibc (see stage 2). Both are covered by the GCC Runtime
+# Library Exception, which permits static linking into any binary.
 RUN cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+        -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
         -DTTG_BUILD_TESTS=OFF \
     && cmake --build build --target ttg_server
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime. A distroless image keeps the attack surface minimal - no
 # shell, no package manager, no unused tooling.
+#
+# base-nossl rather than cc: the server speaks plain HTTP (TLS terminates in
+# front of it, see docs/threat-model.md) and never loads libssl, but cc ships
+# libssl3 anyway. Every OpenSSL advisory then lands on this image without
+# being reachable - grype flagged CVE-2026-75803 that way. A library that is
+# not in the image cannot be vulnerable in it.
 # ---------------------------------------------------------------------------
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/base-nossl-debian12:nonroot
 
 COPY --from=build /src/build/ttg_server /usr/local/bin/ttg_server
 

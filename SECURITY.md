@@ -48,8 +48,9 @@ via crafted frames cause the parser or server to:
 | Test adequacy | coverage reported per run and per release — reported, never gated |
 | Supply chain (CVE) | committed `conan.lock` (enforced in every build), Renovate for Conan updates, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
 | Supply chain (licence) | `scripts/license_check.py`, permissive allowlist, default-deny |
-| Container | distroless base, built from the scanned lockfile, `trivy` gate, image SBOM |
-| Running service (DAST) | ZAP API scan of the container against `docs/openapi.yaml`, gate vs. `.zap/rules.tsv`; security headers asserted in `tests/test_http_server.cpp` |
+| Container | distroless `base-nossl` (glibc only, libstdc++ linked statically), built from the scanned lockfile, `trivy` + `grype` gates, image SBOM |
+| CVEs disclosed after release | nightly `cve-rescan.yml` of the main build and the latest release image; findings open a `security` issue |
+| Running service (DAST) | ZAP API scan and Schemathesis contract fuzzing of the container against `docs/openapi.yaml`, gates vs. `.zap/rules.tsv` / `schemathesis.toml`; security headers asserted in `tests/test_http_server.cpp` |
 | Artefact integrity | `cosign` signature by digest, SBOM attestation, SLSA provenance |
 | Auditability | per-release evidence bundle with the output of every gate |
 
