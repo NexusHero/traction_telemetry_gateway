@@ -37,20 +37,20 @@ env:
 jobs:
   release:
     name: Build, collect evidence, publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write          # create the Release and upload assets
       id-token: write          # keyless signing
       attestations: write      # SLSA provenance
+      actions: read            # look up the CI run for the tagged commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0   # the changelog below walks tag history
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
+      - name: Set up Conan
+        uses: $/.github/actions/setup-conan
 
       # The dispatch input reaches the shell through env, never through ${{ }}
       # template expansion: expanded inline it becomes part of the script, so
@@ -88,41 +88,89 @@ jobs:
             exit 1
           fi
 
-      - name: Install tooling
-        run: pip install --require-hashes -r ci/requirements.txt
+      # A tag is not a review. Anyone who can push one could otherwise ship a
+      # commit that never went through ci.yml - and this workflow re-runs the
+      # unit tests and SAST, but not the sanitizers, the coverage build or the
+      # format and workflow audits. So the full CI must already be green on
+      # exactly this commit. A dry run only warns, so the path stays usable
+      # from a branch whose CI has not finished.
+      - name: Require green CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ steps.version.outputs.dry_run }}
+        run: |
+          green=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1" \
+            --jq '.total_count')
+          echo "successful ci.yml runs for ${GITHUB_SHA}: ${green}"
+          if [ "${green:-0}" -eq 0 ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::warning::no green ci.yml run for ${GITHUB_SHA} - a real release would stop here"
+            else
+              echo "::error::no green ci.yml run for ${GITHUB_SHA}. Tag a commit on main whose CI passed."
+              exit 1
+            fi
+          fi
 
       # No dependency cache in a release build. A cache entry written by an
       # earlier, less trusted run would flow straight into a signed artefact;
       # both dependencies are header-only, so resolving them fresh costs
       # seconds.
+      #
+      # Versioned packages, not the runner's default `clang-tidy`: a runner
+      # image bump that moved the default to a newer major would change the
+      # findings under the gate, and .sast-baseline.txt would suddenly be
+      # wrong without a single source line having changed. Bump on purpose,
+      # together with the baseline.
       - name: Install analyzers
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy cppcheck
+          sudo apt-get install -y clang-tidy-18 cppcheck
 
+      # --lockfile spelled out: Conan would also pick up ./conan.lock on its
+      # own, but a release should not depend on a default nobody reads.
       - name: Resolve dependency graph (conan.lock)
         run: |
-          conan profile detect --force
           conan install . --build=missing -of build -s build_type=Release \
-            --lockfile-out=build/conan.lock
+            --lockfile=conan.lock --lockfile-out=build/conan.lock
 
-      - name: Build release binary
+      # Configure only. This host tree exists for clang-tidy's compilation
+      # database and for the coverage build below; the binary that ships comes
+      # from the Dockerfile (next steps), not from here.
+      - name: Configure (compilation database for SAST)
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          cmake --build build --parallel
-
-      # A release that was never tested is not a release. These re-run rather
-      # than trusting ci.yml: the tag may point at a commit whose CI run has
-      # been garbage-collected, and the evidence bundle should contain results
-      # produced from the exact tree being shipped.
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
 
       - name: Prepare evidence directory
         run: mkdir -p evidence
+
+      # Build once. The tarball used to be built here on the Ubuntu runner,
+      # while the image was built by the Dockerfile on Debian 12: two compilers,
+      # two glibc versions, and a release whose binary was not the one in the
+      # image. Both now come out of the same Dockerfile build stage - Debian 12
+      # glibc, static libstdc++, hardening verified in the stage itself - so the
+      # tarball runs wherever the image's binary runs.
+      #
+      # The test stage builds the suite with that same toolchain and the same
+      # lockfile, and its log goes into the evidence: results produced by the
+      # compiler that produced the shipped binary, from the exact tree tagged.
+      - name: Test with the shipping toolchain (Dockerfile test stage)
+        run: |
+          set -o pipefail
+          docker build -f docker/Dockerfile --target test --progress=plain \
+            -t ttg-test:release . 2>&1 | tee evidence/ctest.txt
+
+      - name: Build the shipped binary (Dockerfile build stage)
+        run: |
+          docker build -f docker/Dockerfile --target build -t ttg-build:release .
+          mkdir -p build-release
+          cid=$(docker create ttg-build:release)
+          docker cp "$cid:/src/build/ttg_server" build-release/ttg_server
+          docker rm "$cid"
+          file build-release/ttg_server
 
       # -------------------------------------------------------------------
       # Stage 3 evidence
@@ -130,7 +178,7 @@ jobs:
       - name: Static analysis
         run: |
           set +e
-          clang-tidy -p build src/*.cpp 2>&1 | tee evidence/clang-tidy.txt
+          clang-tidy-18 -p build src/*.cpp 2>&1 | tee evidence/clang-tidy.txt
           tidy_status=${PIPESTATUS[0]}
           cppcheck --enable=warning,performance,portability \
             --suppress=missingIncludeSystem --std=c++20 \
@@ -202,11 +250,14 @@ jobs:
         env:
           STEM: ${{ steps.version.outputs.stem }}
         run: |
+          set -o pipefail
           stem="$STEM"
           mkdir -p "dist/$stem"
-          cp build/ttg_server "dist/$stem/"
+          cp build-release/ttg_server "dist/$stem/"
           cp README.md LICENSE SECURITY.md "dist/$stem/"
-          strip --strip-unneeded "dist/$stem/ttg_server" || true
+          strip --strip-unneeded "dist/$stem/ttg_server"
+          # Checked again after strip, on the file that actually ships.
+          scripts/check_hardening.sh "dist/$stem/ttg_server" | tee evidence/hardening.txt
           tar -czf "dist/${stem}.tar.gz" -C dist "$stem"
           echo "tarball=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
           ls -la dist/
@@ -238,7 +289,9 @@ jobs:
           | \`conan-audit.json\` | 4 SCA | CVE scan, gate = CVSS >= 9.0 |
           | \`licenses.json\` | 4 SCA | licence policy verdict per shipped component |
           | \`license-check.txt\` | 4 SCA | same, human-readable |
+          | \`ctest.txt\` | 5 test | unit tests built with the shipping toolchain (Dockerfile test stage) |
           | \`coverage.txt\` / \`.xml\` | 5 test | line/branch coverage (reported, never gated) |
+          | \`hardening.txt\` | 7 build | exploit mitigations read from the shipped ELF |
 
           Not in this bundle: the container image evidence. The image is a
           separate artefact with its own SBOM and signature attached in the
@@ -296,6 +349,7 @@ jobs:
             echo ""
             echo "| Stage | Gate | Threshold |"
             echo "| --- | --- | --- |"
+            echo "| 0 | ci.yml green on the tagged commit | required |"
             echo "| 1 | clang-format | any deviation fails |"
             echo "| 2 | gitleaks (full history) | any finding fails |"
             echo "| 2 | zizmor workflow audit | any finding fails |"
@@ -306,6 +360,7 @@ jobs:
             echo "| 6 | libFuzzer (nightly) | any reproducer fails |"
             echo "| 6 | ZAP API scan (DAST) | any warning beyond \`.zap/rules.tsv\` fails |"
             echo "| 6 | Schemathesis contract fuzzing | any failure fails |"
+            echo "| 7 | ELF hardening (PIE, RELRO, BIND_NOW, NX, canary) | any missing fails |"
             echo "| 7 | trivy image scan | CRITICAL (fixable) fails |"
             echo "| 7 | grype image scan | CRITICAL (fixable) fails |"
             echo ""
