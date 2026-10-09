@@ -36,7 +36,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Conan
-        run: pip install "conan>=2.0"
+        run: pip install --require-hashes -r ci/requirements.txt
 
       # No Conan cache here. This job's lockfile and SBOM are what the image
       # is built from and what gets attested on tags, so a poisoned cache entry

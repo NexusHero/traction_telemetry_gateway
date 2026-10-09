@@ -1,0 +1,9 @@
+# Python tooling for CI and the container build. Compiled with hashes into
+# requirements.txt; install with `pip install --require-hashes -r ci/requirements.txt`.
+# Regenerate: uv pip compile --universal --generate-hashes --python-version 3.11 \
+#               ci/requirements.in -o ci/requirements.txt
+conan>=2.0
+gcovr>=7.0
+# conan sbom:cyclonedx (scripts/sbom.sh) imports it; installed here so the SBOM
+# job never pip-installs an unpinned version at run time.
+cyclonedx-python-lib>=5.0.0,<6

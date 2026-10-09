@@ -37,3 +37,17 @@ updates:
     ignore:
       - dependency-name: "debian"
         update-types: ["version-update:semver-major"]
+
+  # Python tooling (Conan, gcovr, cyclonedx) for CI and the image build,
+  # hash-pinned in ci/requirements.txt.
+  - package-ecosystem: "pip"
+    directory: "/ci"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      python-tooling:
+        patterns: ["*"]
