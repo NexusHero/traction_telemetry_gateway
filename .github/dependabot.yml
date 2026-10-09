@@ -14,6 +14,14 @@ updates:
       default-days: 7
     commit-message:
       prefix: "ci(deps)"
+    # One PR for all action updates. Some actions ship as several entry points
+    # of one release (github/codeql-action/init + /analyze) and must move
+    # together: bumped in separate PRs, each PR runs init and analyze from
+    # different majors and CodeQL fails ("Loaded a configuration file for
+    # version '3.38.3', but running version '4.38.2'").
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   - package-ecosystem: "docker"
     directory: "/docker"

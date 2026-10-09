@@ -275,6 +275,30 @@ jobs:
             *) echo "::error::ZAP failed to run (exit $status)"; exit 1 ;;
           esac
 
+      # Stage 6, contract half. Where ZAP replays known attack payloads,
+      # Schemathesis generates requests from docs/openapi.yaml - valid ones,
+      # boundary values, undeclared methods - and checks every response
+      # against the contract: no 5xx, only documented status codes and content
+      # types, bodies matching their schemas, 405 + Allow for wrong methods.
+      # Exceptions live in schemathesis.toml, each with a reason. Runs against
+      # the container the ZAP step started, and again checks it survived.
+      - name: API contract fuzzing - Schemathesis (gate = any failure)
+        run: |
+          mkdir -p evidence
+          chmod a+rwx evidence
+          docker run --rm --network dast \
+            -v "$PWD:/w:ro" -v "$PWD/evidence:/out" -w /tmp \
+            schemathesis/schemathesis:4.30.0@sha256:bb9cecfc9ac4058a15fcf9b505d9d9f972e2dde7c74c4e9289a35922f4cbc0a5 \
+            --config-file /w/schemathesis.toml \
+            run /w/docs/openapi.yaml --url http://ttg:8080 \
+            --report junit --report-junit-path /out/schemathesis-junit.xml
+
+          if [ "$(docker inspect -f '{{.State.Running}}' ttg)" != "true" ]; then
+            echo "::error::the gateway died during the Schemathesis run"
+            docker logs ttg
+            exit 1
+          fi
+
       - name: Upload image evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -285,6 +309,7 @@ jobs:
             evidence/grype-image.json
             evidence/zap-report.json
             evidence/zap-report.html
+            evidence/schemathesis-junit.xml
           if-no-files-found: ignore
 
       - name: Install cosign

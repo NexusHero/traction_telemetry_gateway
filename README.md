@@ -300,6 +300,19 @@ ZAP does not meaningfully test `POST /v1/frames`: its active rules attack named
 parameters, and a binary body has none. The frame parser is covered by
 libFuzzer instead; ZAP covers the HTTP layer around it.
 
+### API contract fuzzing (local)
+
+[Schemathesis](https://schemathesis.readthedocs.io/) generates requests from
+`docs/openapi.yaml` and checks every response against it - no 5xx, only
+documented status codes and content types, schema-valid bodies, `405` for
+undeclared methods. Exceptions are in `schemathesis.toml`, each with a reason.
+With the container from the DAST section running:
+
+```sh
+docker run --rm --network dast -v "$PWD:/w:ro" -w /tmp schemathesis/schemathesis:4.30.0 \
+  --config-file /w/schemathesis.toml run /w/docs/openapi.yaml --url http://ttg:8080
+```
+
 ### Static analysis baseline
 
 `clang-tidy` and `cppcheck` run as a **gate on regressions**, not on absolute
@@ -342,6 +355,10 @@ The machine-readable contract is `docs/openapi.yaml`. Every response carries
 `Cross-Origin-Resource-Policy: same-origin`, `X-Content-Type-Options: nosniff`
 and `X-Frame-Options: DENY`, error responses included.
 
+A wrong method on a known path is `405` with an `Allow` header (RFC 9110
+15.5.6), including `TRACE` and `QUERY`; a method the server does not recognise
+at all is `501`; unknown paths are `404`.
+
 ## Wire format
 
 Documented in `include/ttg/frame.hpp`. Big-endian, CRC-16/CCITT-FALSE:
@@ -361,7 +378,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | 3 | SAST | `ci.yml` → `static-analysis`, `codeql.yml` | finding beyond `.sast-baseline.txt` fails |
 | 4 | SCA / supply chain | `supply-chain.yml` → `sbom-and-scan` | CVSS ≥ 9.0 fails; licence allowlist, default-deny |
 | 5 | Build & test | `ci.yml` → `build-and-test`, `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; coverage reported only |
-| 6 | Dynamic / fuzzing / DAST | `fuzzing.yml` (nightly, cumulative corpus), `supply-chain.yml` → `container` (ZAP API scan) | any crash reproducer fails; any ZAP warning beyond `.zap/rules.tsv` fails |
+| 6 | Dynamic / fuzzing / DAST | `fuzzing.yml` (nightly, cumulative corpus), `supply-chain.yml` → `container` (ZAP API scan, Schemathesis) | any crash reproducer fails; any ZAP warning beyond `.zap/rules.tsv` fails; any Schemathesis failure fails |
 | 7 | Image scan, SBOM & signing | `supply-chain.yml` → `container`, `release.yml`, `cve-rescan.yml` (nightly) | trivy or grype CRITICAL with a fix fails; produces SBOMs, signatures, provenance |
 | 8 | Gate & release | all of the above + `release.yml` | every gate above; release carries the evidence |
 
@@ -370,7 +387,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
 | `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks, **zizmor workflow audit** |
-| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, **Schemathesis contract fuzzing**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
 | `cve-rescan.yml` | nightly / manual | rebuilds main and pulls the latest release image, rescans both with trivy + grype against today's advisories; a finding fails the run and opens/updates a `security` issue |
 | `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
 | `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
