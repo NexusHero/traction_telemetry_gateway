@@ -24,7 +24,7 @@ updates:
     commit-message:
       prefix: "chore(docker)"
     # The builder must stay on the same glibc generation as the distroless
-    # runtime (cc-debian12). A major bump (debian 12 -> 13) would produce a
+    # runtime (base-nossl-debian12). A major bump (debian 12 -> 13) would produce a
     # binary that needs a newer glibc than the runtime ships and fails to load.
     ignore:
       - dependency-name: "debian"

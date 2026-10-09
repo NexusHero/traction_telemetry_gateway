@@ -1,0 +1,34 @@
+name: Install image scanners
+description: >
+  Installs trivy and grype at pinned versions, each verified against a SHA-256
+  recorded here rather than the release's own checksums file - a compromised
+  release would ship a matching checksums file too. This is the single place
+  both versions live; bump version and hash together.
+
+runs:
+  using: composite
+  steps:
+    - name: Install trivy and grype
+      shell: bash
+      env:
+        TRIVY_VERSION: 0.75.0
+        TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+        GRYPE_VERSION: 0.120.1
+        GRYPE_SHA256: 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
+      run: |
+        set -euo pipefail
+        workdir="$(mktemp -d)"
+        cd "$workdir"
+
+        trivy_tgz="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+        curl -sfLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${trivy_tgz}"
+        echo "${TRIVY_SHA256}  ${trivy_tgz}" | sha256sum --check --strict
+        sudo tar -xzf "${trivy_tgz}" -C /usr/local/bin trivy
+
+        grype_tgz="grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+        curl -sfLO "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/${grype_tgz}"
+        echo "${GRYPE_SHA256}  ${grype_tgz}" | sha256sum --check --strict
+        sudo tar -xzf "${grype_tgz}" -C /usr/local/bin grype
+
+        trivy --version
+        grype version

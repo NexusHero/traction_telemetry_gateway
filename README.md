@@ -360,7 +360,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | 4 | SCA / supply chain | `supply-chain.yml` → `sbom-and-scan` | CVSS ≥ 9.0 fails; licence allowlist, default-deny |
 | 5 | Build & test | `ci.yml` → `build-and-test`, `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; coverage reported only |
 | 6 | Dynamic / fuzzing / DAST | `fuzzing.yml` (nightly, cumulative corpus), `supply-chain.yml` → `container` (ZAP API scan) | any crash reproducer fails; any ZAP warning beyond `.zap/rules.tsv` fails |
-| 7 | SBOM & signing | `supply-chain.yml` → `container`, `release.yml` | — (produces SBOMs, signatures, provenance) |
+| 7 | Image scan, SBOM & signing | `supply-chain.yml` → `container`, `release.yml`, `cve-rescan.yml` (nightly) | trivy or grype CRITICAL with a fix fails; produces SBOMs, signatures, provenance |
 | 8 | Gate & release | all of the above + `release.yml` | every gate above; release carries the evidence |
 
 ### Workflows
@@ -368,7 +368,8 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
 | `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks, **zizmor workflow audit** |
-| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image built **from the scanned lockfile**, trivy scan, **ZAP API scan (DAST)**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `cve-rescan.yml` | nightly / manual | rebuilds main and pulls the latest release image, rescans both with trivy + grype against today's advisories; a finding fails the run and opens/updates a `security` issue |
 | `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
 | `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |

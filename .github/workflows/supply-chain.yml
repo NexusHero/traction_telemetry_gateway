@@ -187,24 +187,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Pinned by version and by a SHA-256 recorded here, not fetched from the
-      # release's own checksums file: a compromised release would ship a
-      # matching checksums file too. The previous `curl .../main/install.sh | sh`
-      # ran whatever the default branch held at that moment, inside the job that
-      # holds the registry and signing permissions. Bump both lines together.
-      - name: Install trivy
-        env:
-          TRIVY_VERSION: 0.75.0
-          TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
-        run: |
-          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          curl -sfLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
-          echo "${TRIVY_SHA256}  ${tarball}" | sha256sum --check --strict
-          sudo tar -xzf "${tarball}" -C /usr/local/bin trivy
-          trivy --version
+      # Versions and SHA-256 hashes live in the composite action, shared with
+      # cve-rescan.yml so the gate and the nightly rescan use the same scanners.
+      - name: Install trivy and grype
+        uses: $/.github/actions/install-scanners
 
       - name: Scan image (gate = critical)
         run: trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
+
+      # A second scanner on the same image, with the same threshold. trivy and
+      # grype catalogue packages independently and match against different
+      # advisory feeds, so a CVE one of them misses (a missing distro feed
+      # entry, a cataloguer gap) the other often catches. Two gates that
+      # agree cost seconds; a single scanner's blind spot is invisible.
+      - name: Scan image with grype (gate = critical)
+        run: |
+          mkdir -p evidence
+          grype ttg:ci --only-fixed --fail-on critical \
+            -o table -o json=evidence/grype-image.json
 
       # Two SBOMs describe two different things and both matter. The Conan one
       # (from the job above) lists the libraries this project chose; this one
@@ -282,6 +282,7 @@ jobs:
           name: image-evidence
           path: |
             evidence/image-sbom.cdx.json
+            evidence/grype-image.json
             evidence/zap-report.json
             evidence/zap-report.html
           if-no-files-found: ignore
