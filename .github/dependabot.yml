@@ -6,8 +6,13 @@ version: 2
 # pinned by commit SHA, and Dependabot rewrites those pins and their version
 # comments itself.
 updates:
+  # The composite actions under .github/actions pin actions of their own
+  # (setup-conan uses setup-python); "/" alone only covers the workflows, and
+  # a pin nobody bumps is one that quietly ages.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     cooldown:

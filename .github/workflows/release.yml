@@ -37,7 +37,7 @@ env:
 jobs:
   release:
     name: Build, collect evidence, publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write          # create the Release and upload assets
       id-token: write          # keyless signing
@@ -48,9 +48,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 0   # the changelog below walks tag history
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
+      - name: Set up Conan
+        uses: $/.github/actions/setup-conan
 
       # The dispatch input reaches the shell through env, never through ${{ }}
       # template expansion: expanded inline it becomes part of the script, so
@@ -88,21 +87,22 @@ jobs:
             exit 1
           fi
 
-      - name: Install tooling
-        run: pip install --require-hashes -r ci/requirements.txt
-
       # No dependency cache in a release build. A cache entry written by an
       # earlier, less trusted run would flow straight into a signed artefact;
       # both dependencies are header-only, so resolving them fresh costs
       # seconds.
+      # Versioned packages, not the runner's default `clang-tidy`: a runner
+      # image bump that moved the default to a newer major would change the
+      # findings under the gate, and .sast-baseline.txt would suddenly be
+      # wrong without a single source line having changed. Bump on purpose,
+      # together with the baseline.
       - name: Install analyzers
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy cppcheck
+          sudo apt-get install -y clang-tidy-18 cppcheck
 
       - name: Resolve dependency graph (conan.lock)
         run: |
-          conan profile detect --force
           conan install . --build=missing -of build -s build_type=Release \
             --lockfile-out=build/conan.lock
 
@@ -130,7 +130,7 @@ jobs:
       - name: Static analysis
         run: |
           set +e
-          clang-tidy -p build src/*.cpp 2>&1 | tee evidence/clang-tidy.txt
+          clang-tidy-18 -p build src/*.cpp 2>&1 | tee evidence/clang-tidy.txt
           tidy_status=${PIPESTATUS[0]}
           cppcheck --enable=warning,performance,portability \
             --suppress=missingIncludeSystem --std=c++20 \
