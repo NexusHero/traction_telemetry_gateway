@@ -6,4 +6,4 @@ conan>=2.0
 gcovr>=7.0
 # conan sbom:cyclonedx (scripts/sbom.sh) imports it; installed here so the SBOM
 # job never pip-installs an unpinned version at run time.
-cyclonedx-python-lib>=5.0.0,<6
+cyclonedx-python-lib>=11.12.0,<12
