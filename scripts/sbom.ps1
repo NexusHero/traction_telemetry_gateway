@@ -60,13 +60,18 @@ if (-not (Get-Command conan -ErrorAction SilentlyContinue)) {
 }
 
 $conanHome = Invoke-Native { conan config home } 'conan config home failed'
-$extensionFile = Join-Path $conanHome 'extensions\commands\sbom\cmd_cyclonedx.py'
+# Pinned by commit - see scripts/sbom.sh for the reasoning. Keep both in sync.
+$extensionsCommit = 'd2c9d79e5c6293bee21b3a21f60c34ec0a88f6b7'
+$refMarker = Join-Path $conanHome 'extensions\.conan-extensions-commit'
+$installed = if (Test-Path $refMarker) { (Get-Content $refMarker -Raw).Trim() } else { '' }
 
-if (-not (Test-Path $extensionFile)) {
-    Write-Host '>> installing conan sbom extension (first run only)'
+if ($installed -ne $extensionsCommit) {
+    Write-Host ">> installing conan sbom extension @ $($extensionsCommit.Substring(0, 12))"
     Invoke-Native {
-        conan config install https://github.com/conan-io/conan-extensions.git
+        conan config install "https://github.com/conan-io/conan-extensions/archive/$extensionsCommit.zip" `
+            -sf "conan-extensions-$extensionsCommit"
     } 'conan config install failed'
+    Set-Content -Path $refMarker -Value $extensionsCommit -NoNewline
 }
 
 if (-not (Test-SbomCommand)) {
