@@ -106,4 +106,73 @@ TEST_F(HttpServerTest, OversizedBodyIsRefusedBeforeTheParser) {
     EXPECT_EQ(store_.stats().frames_rejected, 0U);
 }
 
+// Schemathesis (supply-chain.yml) checks this from the outside; asserting it
+// here keeps the contract visible next to the other HTTP behaviour.
+TEST_F(HttpServerTest, WrongMethodOnKnownPathIs405WithAllow) {
+    auto cli = client();
+
+    const auto get_frames = cli.Get("/v1/frames");
+    ASSERT_TRUE(get_frames);
+    EXPECT_EQ(get_frames->status, 405);
+    EXPECT_EQ(get_frames->get_header_value("Allow"), "POST");
+    EXPECT_EQ(get_frames->body, R"({"error":"method_not_allowed"})");
+    expect_security_headers(get_frames);
+
+    const auto delete_stats = cli.Delete("/v1/stats");
+    ASSERT_TRUE(delete_stats);
+    EXPECT_EQ(delete_stats->status, 405);
+    EXPECT_EQ(delete_stats->get_header_value("Allow"), "GET, HEAD");
+}
+
+// httplib has no handler table for TRACE and would answer 400.
+TEST_F(HttpServerTest, TraceOnKnownPathIs405) {
+    httplib::Request req;
+    req.method = "TRACE";
+    req.path = "/healthz";
+    const auto res = client().send(req);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 405);
+    EXPECT_EQ(res->get_header_value("Allow"), "GET, HEAD");
+}
+
+TEST_F(HttpServerTest, QueryMethodIsRecognisedButNotAllowed) {
+    httplib::Request req;
+    req.method = "QUERY";
+    req.path = "/v1/telemetry";
+    auto res = client().send(req);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 405);
+    EXPECT_EQ(res->get_header_value("Allow"), "GET, HEAD");
+
+    req.path = "/does-not-exist";
+    res = client().send(req);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 404);
+}
+
+// A well-formed request with a method nobody registered is 501, not httplib's
+// 400: the client sent nothing malformed.
+TEST_F(HttpServerTest, UnrecognisedMethodIs501) {
+    httplib::Request req;
+    req.method = "FROBNICATE";
+    req.path = "/healthz";
+    const auto res = client().send(req);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 501);
+    EXPECT_EQ(res->body, R"({"error":"not_implemented"})");
+    expect_security_headers(res);
+}
+
+TEST_F(HttpServerTest, HeadIsAllowedWhereGetIs) {
+    const auto res = client().Head("/v1/stats");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+}
+
+TEST_F(HttpServerTest, WrongMethodOnUnknownPathStays404) {
+    const auto res = client().Delete("/does-not-exist");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 404);
+}
+
 }  // namespace
