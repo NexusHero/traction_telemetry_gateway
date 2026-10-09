@@ -209,6 +209,31 @@ the extension appends `repository_url=`; when it comes from a warm cache, it
 does not. The same commit can therefore produce two slightly different purls.
 This is upstream behaviour, left unmassaged rather than patched over here.
 
+### Dependency pinning and updates
+
+`conan.lock` is committed. Conan picks it up automatically, so every job, the
+container image and the release resolve the same recipe revisions, and the
+Dockerfile refuses to build without it. A dependency change is therefore always
+a reviewable diff in `conanfile.py` and `conan.lock`, never a silent re-resolve
+against whatever ConanCenter serves that day.
+
+To change a dependency, edit `conanfile.py` and regenerate the lockfile:
+
+```sh
+conan lock create . --lockfile-out=conan.lock
+```
+
+Updates come from two bots, split so no dependency is proposed twice:
+
+| What | Bot | Config |
+| --- | --- | --- |
+| Conan packages + `conan.lock` | [Renovate](https://docs.renovatebot.com/modules/manager/conan/) | `renovate.json` |
+| GitHub Actions (SHA pins), Docker base image | Dependabot | `.github/dependabot.yml` |
+
+Both wait 7 days before proposing a release. Renovate only runs once the
+[Renovate GitHub App](https://github.com/apps/renovate) is installed on the
+repository; until then `renovate.json` is inert.
+
 ### CVE scanning (local)
 
 The CI gate uses `conan audit`, which is part of Conan core but needs a free
@@ -330,7 +355,7 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | # | Stage | Where | Gate |
 | --- | --- | --- | --- |
 | 1 | Pre-commit | `.pre-commit-config.yaml`, `ci.yml` → `format` | clang-format deviation fails |
-| 2 | Secrets scanning | `ci.yml` → `secrets-scan` (gitleaks, full history) | any finding fails |
+| 2 | Secrets scanning, pipeline audit | `ci.yml` → `secrets-scan` (gitleaks, full history), `workflow-audit` (zizmor) | any finding fails |
 | 3 | SAST | `ci.yml` → `static-analysis`, `codeql.yml` | finding beyond `.sast-baseline.txt` fails |
 | 4 | SCA / supply chain | `supply-chain.yml` → `sbom-and-scan` | CVSS ≥ 9.0 fails; licence allowlist, default-deny |
 | 5 | Build & test | `ci.yml` → `build-and-test`, `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; coverage reported only |
@@ -342,12 +367,37 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
-| `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks |
+| `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks, **zizmor workflow audit** |
 | `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image built **from the scanned lockfile**, trivy scan, **ZAP API scan (DAST)**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
 | `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
 | `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
 | `codeql.yml` | push / PR / weekly | CodeQL analysis (C++) |
+
+### Hardening the pipeline itself
+
+The workflows hold the registry token and the signing identity, so they get the
+same treatment as source code:
+
+- **Every action is pinned by commit SHA**, with the release in a trailing
+  comment (`@3d3c42e… # v7.0.1`). A tag can be moved by whoever controls the
+  action's repository; a SHA cannot. Dependabot updates the pins.
+- **Downloaded tools are pinned by version and SHA-256** recorded in the
+  workflow (trivy), and container images by digest (ZAP).
+- **Least privilege per job.** Workflows default to `contents: read`; write
+  scopes sit on the single job that needs them.
+- **No persisted checkout credentials** (`persist-credentials: false`), no
+  `${{ }}` expansion inside `run:` scripts (values go through `env:`), and no
+  dependency cache on paths that produce signed artefacts.
+- **Dependabot cooldown of 7 days**, so a freshly hijacked release has time to
+  be noticed and yanked before it is proposed here.
+
+`ci.yml` → `workflow-audit` runs [zizmor](https://docs.zizmor.sh/) over all of
+this and fails on any finding. Locally:
+
+```sh
+pipx run zizmor==1.30.1 .
+```
 
 ### Release and evidence
 

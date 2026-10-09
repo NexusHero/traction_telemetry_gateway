@@ -8,7 +8,8 @@ out/
 CMakeUserPresets.json
 CMakePresets.json
 .conan2/
-conan.lock
+# conan.lock is committed on purpose: every job, the image and the release
+# resolve the reviewed graph, and dependency bumps show up as a diff.
 
 # Editors
 .idea/

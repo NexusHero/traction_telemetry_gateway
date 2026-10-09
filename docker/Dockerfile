@@ -25,25 +25,14 @@ WORKDIR /src
 # Pull dependencies first so this layer can be cached independently of source
 # changes. build_tests=False keeps the production image free of test code.
 #
-# conan.lock is optional in the build context (the glob matches nothing on a
-# bare `docker build` from a fresh clone) but always present in CI, where
-# supply-chain.yml stages the same lockfile it resolved and scanned. With it,
-# the image contains exactly the recipe revisions that passed the CVE and
-# licence gates; without it, Conan would re-resolve against whatever
-# ConanCenter serves at build time - which is a different, unreviewed graph.
-COPY conanfile.py conan.lock* ./
+# conan.lock is committed and required: the image contains exactly the recipe
+# revisions that passed the CVE and licence gates, never whatever ConanCenter
+# serves at build time. A missing lockfile fails the COPY instead of silently
+# resolving a different, unreviewed graph.
+COPY conanfile.py conan.lock ./
 RUN conan profile detect --force \
-    && if [ -f conan.lock ]; then \
-         echo ">> building from conan.lock (pinned graph)"; \
-         conan install . --lockfile=conan.lock --build=missing -of build \
-           -s build_type=Release -o build_tests=False; \
-       else \
-         echo ">> WARNING: no conan.lock in the build context - resolving the"; \
-         echo ">> graph fresh. This image is not reproducible. CI always"; \
-         echo ">> provides a lockfile; see .github/workflows/supply-chain.yml"; \
-         conan install . --build=missing -of build \
-           -s build_type=Release -o build_tests=False; \
-       fi
+    && conan install . --lockfile=conan.lock --build=missing -of build \
+         -s build_type=Release -o build_tests=False
 
 COPY CMakeLists.txt ./
 COPY include ./include

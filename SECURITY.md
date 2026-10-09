@@ -41,11 +41,12 @@ via crafted frames cause the parser or server to:
 | --- | --- |
 | Formatting / lint drift | `pre-commit` hooks locally, `clang-format` gate in CI |
 | Secrets in the repository | `gitleaks` gate in CI, over the full history |
+| CI/CD pipeline integrity | actions pinned by SHA, tools by checksum, images by digest; per-job least privilege; `zizmor` gate on the workflows; Dependabot cooldown |
 | Memory safety (own code) | ASan + UBSan test runs, libFuzzer on the parser (cumulative corpus) |
 | Data races | ThreadSanitizer over `tests/test_concurrency.cpp` |
 | Static analysis | clang-tidy, cppcheck (regression gate vs. `.sast-baseline.txt`), GitHub CodeQL |
 | Test adequacy | coverage reported per run and per release — reported, never gated |
-| Supply chain (CVE) | Conan lockfile, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
+| Supply chain (CVE) | committed `conan.lock` (enforced in every build), Renovate for Conan updates, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
 | Supply chain (licence) | `scripts/license_check.py`, permissive allowlist, default-deny |
 | Container | distroless base, built from the scanned lockfile, `trivy` gate, image SBOM |
 | Running service (DAST) | ZAP API scan of the container against `docs/openapi.yaml`, gate vs. `.zap/rules.tsv`; security headers asserted in `tests/test_http_server.cpp` |
