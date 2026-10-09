@@ -54,7 +54,7 @@ jobs:
       # before. The key must be unique per run because a cache entry is
       # immutable once written.
       - name: Restore fuzzing corpus
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz-corpus
           key: fuzz-corpus-${{ github.run_id }}
@@ -103,7 +103,7 @@ jobs:
 
       - name: Save fuzzing corpus
         if: always()
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz-corpus
           key: fuzz-corpus-${{ github.run_id }}
