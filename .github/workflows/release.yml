@@ -39,7 +39,7 @@ jobs:
     name: Build, collect evidence, publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # the changelog below walks tag history
 
@@ -76,7 +76,7 @@ jobs:
         run: pip install "conan>=2.0" "gcovr>=7.0"
 
       - name: Cache Conan packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CONAN_HOME }}
           key: conan-release-${{ hashFiles('conanfile.py') }}
@@ -313,7 +313,7 @@ jobs:
       # Release is created and no version number is consumed.
       - name: Upload artefacts (dry run)
         if: steps.version.outputs.dry_run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-dry-run
           path: |
