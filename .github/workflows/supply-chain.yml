@@ -199,12 +199,74 @@ jobs:
           trivy image --format cyclonedx --output evidence/image-sbom.cdx.json ttg:ci
           echo "image SBOM components: $(python -c "import json;print(len(json.load(open('evidence/image-sbom.cdx.json')).get('components',[])))")"
 
+      # Stage 6, dynamic half. trivy judged what is *in* the image; this judges
+      # how the running image *behaves* on the wire. ZAP's API scan has nothing
+      # to crawl on a JSON API, so it learns the attack surface from
+      # docs/openapi.yaml - a route missing there is a route never scanned.
+      #
+      # The gate fails on any WARN or FAIL that .zap/rules.tsv does not accept.
+      # That is only stable because the ZAP image is pinned: new ZAP releases
+      # add rules, and a floating tag would turn an upstream release into a red
+      # pipeline on an unchanged tree. Bump the version deliberately.
+      #
+      # What this does not cover: the binary frame body. ZAP's active rules
+      # attack named parameters, and an octet-stream body has none, so
+      # /v1/frames is fuzzed by libFuzzer (fuzzing.yml) instead.
+      - name: DAST - ZAP API scan (gate = any unaccepted warning)
+        run: |
+          docker network create dast
+          docker run -d --name ttg --network dast -p 127.0.0.1:8080:8080 ttg:ci
+
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/readyz >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8080/readyz >/dev/null || {
+            echo "::error::gateway did not become ready"; docker logs ttg; exit 1;
+          }
+
+          # ZAP runs as an unprivileged user and writes its reports into the
+          # mounted directory, so it must be world-writable.
+          mkdir -p zap
+          cp docs/openapi.yaml .zap/rules.tsv zap/
+          chmod -R a+rwX zap
+
+          set +e
+          docker run --rm --network dast -v "$PWD/zap:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:2.17.0 \
+            zap-api-scan.py -t /zap/wrk/openapi.yaml -f openapi \
+              -O http://ttg:8080 -c rules.tsv \
+              -J zap-report.json -r zap-report.html -s
+          status=$?
+          set -e
+
+          mkdir -p evidence
+          cp zap/zap-report.json zap/zap-report.html evidence/ 2>/dev/null || true
+
+          # A scan that crashed the target would otherwise read as "few
+          # findings". The process surviving the attack is part of the verdict.
+          if [ "$(docker inspect -f '{{.State.Running}}' ttg)" != "true" ]; then
+            echo "::error::the gateway died during the DAST scan"
+            docker logs ttg
+            exit 1
+          fi
+
+          # zap-api-scan.py: 0 = clean, 1 = FAIL, 2 = WARN, 3 = scan error.
+          case "$status" in
+            0) echo "ZAP: no findings beyond .zap/rules.tsv" ;;
+            1|2) echo "::error::ZAP reported findings - see zap-report.html in the image-evidence artefact"; exit 1 ;;
+            *) echo "::error::ZAP failed to run (exit $status)"; exit 1 ;;
+          esac
+
       - name: Upload image evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: image-evidence
-          path: evidence/image-sbom.cdx.json
+          path: |
+            evidence/image-sbom.cdx.json
+            evidence/zap-report.json
+            evidence/zap-report.html
           if-no-files-found: ignore
 
       - name: Install cosign

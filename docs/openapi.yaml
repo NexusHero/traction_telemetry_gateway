@@ -1,0 +1,164 @@
+# REST API of the traction telemetry gateway.
+#
+# Hand-written against src/http_server.cpp and src/report.cpp. Its first
+# consumer is the ZAP API scan in supply-chain.yml, which discovers the attack
+# surface from this file rather than by crawling - a JSON API has no links to
+# follow. An endpoint missing here is therefore an endpoint the DAST stage does
+# not test: add new routes in the same pull request that adds them to the server.
+openapi: 3.0.3
+info:
+  title: Traction Telemetry Gateway
+  version: 0.1.0
+  description: |
+    Ingests binary TTB frames and serves the latest value per channel as JSON.
+    No authentication and no TLS in process - see docs/threat-model.md.
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /v1/frames:
+    post:
+      summary: Ingest one TTB frame
+      description: Wire format is documented in include/ttg/frame.hpp.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              maxLength: 1044   # 18 header + 1024 payload + 2 CRC
+      responses:
+        '202':
+          description: Frame accepted and stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Frame' }
+        '400':
+          description: Frame rejected by the parser
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParseError' }
+        '413':
+          description: Body larger than the largest valid frame
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HttpError' }
+
+  /v1/telemetry:
+    get:
+      summary: Latest value of every tracked channel
+      responses:
+        '200':
+          description: Snapshot of the store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Snapshot' }
+
+  /v1/stats:
+    get:
+      summary: Ingest counters
+      responses:
+        '200':
+          description: Counters since process start
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stats' }
+
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Probe' }
+
+  /readyz:
+    get:
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Process accepts traffic
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Probe' }
+
+components:
+  schemas:
+    ValueType:
+      type: string
+      enum: [int32, float32]
+
+    Channel:
+      type: object
+      required: [id, type, value]
+      properties:
+        id: { type: integer, minimum: 0, maximum: 65535 }
+        type: { $ref: '#/components/schemas/ValueType' }
+        value: { type: number }
+
+    Frame:
+      type: object
+      required: [msg_type, sequence, timestamp_ms, channel_count, channels]
+      properties:
+        msg_type: { type: string, enum: [telemetry, heartbeat, fault] }
+        sequence: { type: integer, format: int64 }
+        timestamp_ms: { type: integer, format: int64 }
+        channel_count: { type: integer, maximum: 128 }
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+
+    Snapshot:
+      type: object
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Channel'
+              - type: object
+                required: [updated_at_ms, update_count]
+                properties:
+                  updated_at_ms: { type: integer, format: int64 }
+                  update_count: { type: integer, format: int64 }
+
+    Stats:
+      type: object
+      required: [frames_received, frames_rejected, channels_tracked]
+      properties:
+        frames_received: { type: integer, format: int64 }
+        frames_rejected: { type: integer, format: int64 }
+        channels_tracked: { type: integer, format: int64 }
+
+    Probe:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [alive, ready] }
+
+    ParseError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - too_short
+            - bad_magic
+            - unsupported_version
+            - unknown_message_type
+            - bad_payload_length
+            - too_many_channels
+            - bad_channel_entry
+            - bad_crc
+
+    HttpError:
+      type: object
+      required: [error, status]
+      properties:
+        error: { type: string, enum: [http_error] }
+        status: { type: integer }
