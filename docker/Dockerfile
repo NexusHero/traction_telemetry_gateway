@@ -5,7 +5,9 @@
 # runtime below - a binary built against a newer glibc than the runtime ships
 # fails at load time. Conan dependencies come from ConanCenter.
 # ---------------------------------------------------------------------------
-FROM debian:12-slim AS build
+# Base images are pinned by digest; the tag is kept for readability and so
+# Dependabot can propose digest updates.
+FROM debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS build
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CONAN_HOME=/opt/conan2
@@ -15,9 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-venv pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Conan in a venv so the system Python stays untouched (PEP 668 safe).
+# Conan in a venv so the system Python stays untouched (PEP 668 safe), from
+# the same hash-pinned requirements CI uses: --require-hashes refuses any
+# package, including transitive ones, whose bytes differ from the lock.
+COPY ci/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install "conan>=2.0" \
+    && /opt/venv/bin/pip install --require-hashes -r /tmp/requirements.txt \
     && ln -s /opt/venv/bin/conan /usr/local/bin/conan
 
 WORKDIR /src
@@ -58,7 +63,7 @@ RUN cmake -S . -B build -G Ninja \
 # being reachable - grype flagged CVE-2026-75803 that way. A library that is
 # not in the image cannot be vulnerable in it.
 # ---------------------------------------------------------------------------
-FROM gcr.io/distroless/base-nossl-debian12:nonroot
+FROM gcr.io/distroless/base-nossl-debian12:nonroot@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e
 
 COPY --from=build /src/build/ttg_server /usr/local/bin/ttg_server
 

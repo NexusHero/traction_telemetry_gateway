@@ -76,7 +76,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Conan
-        run: pip install "conan>=2.0"
+        run: pip install --require-hashes -r ci/requirements.txt
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -140,7 +140,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Conan
-        run: pip install "conan>=2.0"
+        run: pip install --require-hashes -r ci/requirements.txt
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -185,7 +185,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Conan and gcovr
-        run: pip install "conan>=2.0" "gcovr>=7.0"
+        run: pip install --require-hashes -r ci/requirements.txt
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -257,7 +257,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Conan
-        run: pip install "conan>=2.0"
+        run: pip install --require-hashes -r ci/requirements.txt
 
       - name: Install analyzers
         run: |

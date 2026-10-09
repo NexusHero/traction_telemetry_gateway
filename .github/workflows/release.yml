@@ -26,10 +26,10 @@ on:
         required: false
         default: 'v0.0.0-dryrun'
 
+# Read-only at the top; the release job below holds the write scopes. Same
+# effective permissions today, but a job added later starts from read-only.
 permissions:
-  contents: write          # create the Release and upload assets
-  id-token: write          # keyless signing
-  attestations: write      # SLSA provenance
+  contents: read
 
 env:
   CONAN_HOME: ${{ github.workspace }}/.conan2
@@ -38,6 +38,10 @@ jobs:
   release:
     name: Build, collect evidence, publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write          # create the Release and upload assets
+      id-token: write          # keyless signing
+      attestations: write      # SLSA provenance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,7 +89,7 @@ jobs:
           fi
 
       - name: Install tooling
-        run: pip install "conan>=2.0" "gcovr>=7.0"
+        run: pip install --require-hashes -r ci/requirements.txt
 
       # No dependency cache in a release build. A cache entry written by an
       # earlier, less trusted run would flow straight into a signed artefact;
