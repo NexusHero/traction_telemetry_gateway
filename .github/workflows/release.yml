@@ -301,6 +301,7 @@ jobs:
             echo "| 5 | ctest, ASan/UBSan, TSan | any failure fails |"
             echo "| 6 | libFuzzer (nightly) | any reproducer fails |"
             echo "| 6 | ZAP API scan (DAST) | any warning beyond \`.zap/rules.tsv\` fails |"
+            echo "| 6 | Schemathesis contract fuzzing | any failure fails |"
             echo "| 7 | trivy image scan | CRITICAL (fixable) fails |"
             echo "| 7 | grype image scan | CRITICAL (fixable) fails |"
             echo ""
