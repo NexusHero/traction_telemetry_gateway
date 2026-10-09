@@ -44,7 +44,8 @@ TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store)
 
     server_->Post("/v1/frames", [this](const httplib::Request& req, httplib::Response& res) {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(req.body.data());
-        const ParseResult result = parse_frame(std::span<const std::uint8_t>(bytes, req.body.size()));
+        const ParseResult result =
+            parse_frame(std::span<const std::uint8_t>(bytes, req.body.size()));
         if (!result.ok()) {
             store_.record_rejected();
             res.status = 400;
@@ -93,9 +94,7 @@ int TelemetryHttpServer::bind(const std::string& host, int port) {
     return server_->bind_to_port(host, port) ? port : -1;
 }
 
-bool TelemetryHttpServer::serve() {
-    return server_->listen_after_bind();
-}
+bool TelemetryHttpServer::serve() { return server_->listen_after_bind(); }
 
 void TelemetryHttpServer::stop() {
     if (server_) {

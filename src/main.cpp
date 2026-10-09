@@ -48,8 +48,13 @@ int main() {
     ttg::TelemetryHttpServer server(store);
     g_server = &server;
 
-    std::signal(SIGINT, handle_signal);
-    std::signal(SIGTERM, handle_signal);
+    // Without these handlers SIGTERM kills the process mid-request instead of
+    // letting the server drain, so failing to install them is a startup error.
+    if (std::signal(SIGINT, handle_signal) == SIG_ERR ||
+        std::signal(SIGTERM, handle_signal) == SIG_ERR) {
+        std::cerr << "failed to install signal handlers\n";
+        return EXIT_FAILURE;
+    }
 
     std::cout << "traction-telemetry-gateway listening on " << host << ':' << port
               << " (max_channels=" << max_channels << ")\n";

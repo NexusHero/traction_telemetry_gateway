@@ -37,9 +37,7 @@ protected:
         }
     }
 
-    httplib::Client client() const {
-        return httplib::Client("127.0.0.1", port_);
-    }
+    httplib::Client client() const { return httplib::Client("127.0.0.1", port_); }
 
     ttg::TelemetryStore store_{64};
     ttg::TelemetryHttpServer server_{store_};
