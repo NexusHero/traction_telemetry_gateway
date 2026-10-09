@@ -102,6 +102,72 @@ jobs:
         run: scripts/check_hardening.sh build/ttg_server build/ttg_tests
 
   # ---------------------------------------------------------------------------
+  # Stage 5, the target half. The jobs above build for the runner (x86-64);
+  # the gateway runs on an embedded Linux box, which in this class of system
+  # means 64-bit ARM. Cross-compiling here catches what an x86-only CI never
+  # sees: architecture-specific warnings, a dependency without an ARM build,
+  # alignment and char-signedness assumptions (char is unsigned on AArch64).
+  #
+  # The tests then run under qemu user-mode emulation. That proves functional
+  # behaviour on the target ISA, not timing: qemu says nothing about latency
+  # or jitter, which need real hardware (see docs/realtime.md).
+  # ---------------------------------------------------------------------------
+  cross-aarch64:
+    name: Cross build & test (aarch64, qemu)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Conan
+        uses: $/.github/actions/setup-conan
+
+      - name: Install cross toolchain and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-13-aarch64-linux-gnu qemu-user
+
+      - name: Cache Conan packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-armv8-${{ hashFiles('conanfile.py', 'conan.lock', 'ci/conan/linux-armv8-gcc13') }}
+
+      - name: Install dependencies (host = armv8, build = runner)
+        run: >
+          conan install . --build=missing -of build
+          -pr:h ci/conan/linux-armv8-gcc13 -pr:b default
+          --lockfile=conan.lock
+
+      # CMAKE_CROSSCOMPILING_EMULATOR is what lets ctest - and gtest's test
+      # discovery, which runs the binary at build time - execute AArch64
+      # binaries on this runner. -L points qemu at the target's sysroot.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+          -DCMAKE_CROSSCOMPILING_EMULATOR="qemu-aarch64;-L;/usr/aarch64-linux-gnu"
+          -DTTG_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify the binary is AArch64
+        run: |
+          file build/ttg_server
+          readelf -h build/ttg_server | grep -q 'Machine:.*AArch64'
+
+      - name: Test (qemu-aarch64)
+        run: ctest --test-dir build --output-on-failure
+
+      # readelf from binutils reads any ELF, so the same script checks the
+      # ARM binary: PAC/BTI aside, the mitigations are the same set.
+      - name: Verify exploit mitigations
+        run: scripts/check_hardening.sh build/ttg_server build/ttg_tests
+
+  # ---------------------------------------------------------------------------
   # Stage 5. One sanitizer per job: ASan and TSan ship incompatible runtimes and
   # cannot be linked into the same binary, which is why TTG_SANITIZER is
   # single-valued rather than a set of booleans.
@@ -359,3 +425,59 @@ jobs:
           # Report to the job log and fail; uploading SARIF would need
           # security-events: write, which this workflow does not grant.
           advanced-security: false
+
+  # ---------------------------------------------------------------------------
+  # Stage 6, the pull-request half. The nightly run in fuzzing.yml goes deep;
+  # this goes wide and early: one minute against every PR, starting from the
+  # corpus the nightly runs have accumulated, so a change that makes the parser
+  # crash on a known-interesting input is caught before merge, not the next
+  # morning. Read-only on the corpus - only the nightly run on main writes it.
+  # ---------------------------------------------------------------------------
+  fuzz-smoke:
+    name: Fuzz smoke (libFuzzer, 60s)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang-18 libclang-rt-18-dev
+
+      - name: Build fuzzer
+        run: |
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DTTG_BUILD_SERVER=OFF \
+            -DTTG_BUILD_TESTS=OFF \
+            -DTTG_ENABLE_FUZZING=ON
+          cmake --build build-fuzz --target fuzz_frame_parser
+
+      - name: Restore fuzzing corpus (from the nightly run)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      # Unlike the nightly job, the exit status is the verdict here: a 60s run
+      # with -max_total_time does not hit libFuzzer's own timeout path, so a
+      # non-zero exit is a crash, a leak or a slow input.
+      - name: Fuzz for 60 seconds
+        run: |
+          mkdir -p fuzz-corpus artifacts
+          cp tests/corpus/* fuzz-corpus/
+          ./build-fuzz/fuzz_frame_parser fuzz-corpus/ \
+            -max_total_time=60 -print_final_stats=1 -artifact_prefix=artifacts/
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-smoke-reproducers
+          path: artifacts/
+          if-no-files-found: ignore

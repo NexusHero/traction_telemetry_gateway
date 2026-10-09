@@ -186,11 +186,25 @@ if(TTG_BUILD_TESTS)
     target_compile_options(ttg_tests PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
     target_link_options(ttg_tests PRIVATE ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
 
+    # The checked-in fuzzing seeds and every crash reproducer ever added next to
+    # them are replayed by tests/test_parser.cpp on every build - including the
+    # sanitizer jobs - so a fixed fuzzer finding stays fixed.
+    target_compile_definitions(ttg_tests PRIVATE
+        TTG_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus")
+
     include(GoogleTest)
     # The concurrency tests spin up threads and hammer a mutex; under TSan they
     # are an order of magnitude slower than the rest of the suite, so the
     # default 5s discovery timeout is not enough.
     gtest_discover_tests(ttg_tests DISCOVERY_TIMEOUT 60 PROPERTIES TIMEOUT 300)
+
+    # Real-time gate: allocation bounds of the parser. A separate executable
+    # because it replaces the global operator new (see the file's header).
+    add_executable(ttg_rt_tests tests/test_realtime.cpp)
+    target_link_libraries(ttg_rt_tests PRIVATE ttg_parser GTest::gtest_main)
+    target_compile_options(ttg_rt_tests PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
+    target_link_options(ttg_rt_tests PRIVATE ${TTG_INSTRUMENTATION} ${TTG_HARDEN_LINK})
+    gtest_discover_tests(ttg_rt_tests DISCOVERY_TIMEOUT 60)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,9 @@
 #include "ttg/parser.hpp"
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -133,6 +136,33 @@ TEST(Parser, NeverThrowsOnArbitraryInput) {
         }
         EXPECT_NO_THROW({ (void)ttg::parse_frame(bytes); });
     }
+}
+
+// Regression half of the fuzzing setup. The nightly fuzzer only finds a crash
+// once; this replays every file in tests/corpus - the seeds, plus each
+// reproducer committed there after a fix - on every build, under every
+// sanitizer job. The assertion is the parser's contract: it returns, and a
+// non-Ok result carries no channels.
+TEST(Parser, ReplaysCheckedInCorpus) {
+    namespace fs = std::filesystem;
+    const fs::path dir{TTG_CORPUS_DIR};
+    ASSERT_TRUE(fs::is_directory(dir)) << dir;
+
+    std::size_t replayed = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        std::ifstream in(entry.path(), std::ios::binary);
+        const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(in),
+                                              std::istreambuf_iterator<char>()};
+        const auto result = ttg::parse_frame(bytes);
+        if (!result.ok()) {
+            EXPECT_TRUE(result.frame.channels.empty()) << entry.path();
+        }
+        ++replayed;
+    }
+    EXPECT_GT(replayed, 0U) << "empty corpus directory: " << dir;
 }
 
 }  // namespace
