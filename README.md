@@ -209,6 +209,31 @@ the extension appends `repository_url=`; when it comes from a warm cache, it
 does not. The same commit can therefore produce two slightly different purls.
 This is upstream behaviour, left unmassaged rather than patched over here.
 
+### Dependency pinning and updates
+
+`conan.lock` is committed. Conan picks it up automatically, so every job, the
+container image and the release resolve the same recipe revisions, and the
+Dockerfile refuses to build without it. A dependency change is therefore always
+a reviewable diff in `conanfile.py` and `conan.lock`, never a silent re-resolve
+against whatever ConanCenter serves that day.
+
+To change a dependency, edit `conanfile.py` and regenerate the lockfile:
+
+```sh
+conan lock create . --lockfile-out=conan.lock
+```
+
+Updates come from two bots, split so no dependency is proposed twice:
+
+| What | Bot | Config |
+| --- | --- | --- |
+| Conan packages + `conan.lock` | [Renovate](https://docs.renovatebot.com/modules/manager/conan/) | `renovate.json` |
+| GitHub Actions (SHA pins), Docker base image | Dependabot | `.github/dependabot.yml` |
+
+Both wait 7 days before proposing a release. Renovate only runs once the
+[Renovate GitHub App](https://github.com/apps/renovate) is installed on the
+repository; until then `renovate.json` is inert.
+
 ### CVE scanning (local)
 
 The CI gate uses `conan audit`, which is part of Conan core but needs a free
