@@ -174,8 +174,10 @@ That is the concrete, measurable version of "keine Allokation im heißen Pfad".
 
 Conan has no SBOM command in core, so the pipeline uses `conan sbom:cyclonedx`
 from the official [conan-extensions](https://github.com/conan-io/conan-extensions)
-repo. The wrapper installs the extension and its `cyclonedx-python-lib`
-dependency on first run:
+repo, pinned to a commit in `scripts/sbom.sh` (bump `EXTENSIONS_COMMIT` there
+and in `sbom.ps1` deliberately). The wrapper installs that revision on first
+run, or when the Conan home holds a different one; `cyclonedx-python-lib` comes
+from `ci/requirements.txt`:
 
 ```sh
 ./scripts/sbom.sh                 # -> build/sbom.cdx.json (CycloneDX 1.4)
