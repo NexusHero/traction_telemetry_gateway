@@ -1,0 +1,69 @@
+# Stage 1 of the pipeline: the cheapest feedback there is. Everything here runs
+# on the developer's machine before the commit exists, so CI never has to spend
+# a runner minute on a trailing whitespace or an unformatted brace.
+#
+#   pip install pre-commit
+#   pre-commit install              # format/lint hooks on every commit
+#   pre-commit install --hook-type pre-push   # the slower gitleaks history scan
+#   pre-commit run --all-files      # one-off sweep over the whole tree
+#
+# The same tools run in CI (see .github/workflows/ci.yml), because hooks are
+# advisory by nature: `--no-verify` exists, and a contributor who clones the
+# repo without running `pre-commit install` gets no hooks at all. Local hooks
+# are there to make the CI gate boring, not to replace it.
+repos:
+  # ---------------------------------------------------------------------------
+  # File hygiene. Cheap, language-agnostic, catches the mechanical stuff.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^tests/corpus/
+      - id: end-of-file-fixer
+        exclude: ^tests/corpus/
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^(tests/corpus/|scripts/.*\.ps1$)
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=256]
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      # Binary fuzzing seeds are meant to be malformed; they are not text and
+      # must not be "fixed" by any of the hooks above.
+      - id: check-case-conflict
+
+  # ---------------------------------------------------------------------------
+  # Formatting and static analysis for C++. Both read the configs already in
+  # the repo root (.clang-format, .clang-tidy) so there is exactly one source
+  # of truth shared by hooks, CI and the developer's editor.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.4
+    hooks:
+      - id: clang-format
+        files: \.(c|cc|cpp|h|hpp)$
+
+  # clang-tidy needs a compilation database, which only exists after a CMake
+  # configure with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON. The hook is therefore
+  # opt-in: it is skipped unless build/compile_commands.json is present, so a
+  # fresh clone is not blocked on having configured a build tree first.
+  - repo: local
+    hooks:
+      - id: clang-tidy
+        name: clang-tidy (skipped without build/compile_commands.json)
+        entry: scripts/clang_tidy_hook.sh
+        language: script
+        files: ^(src|include)/.*\.(cpp|hpp)$
+        require_serial: true
+
+  # ---------------------------------------------------------------------------
+  # Secrets. The commit-stage hook scans only what is being committed, which is
+  # fast; the full-history scan is wired to pre-push, where a few seconds are
+  # affordable. Stage 2 in CI repeats the history scan on every PR.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks

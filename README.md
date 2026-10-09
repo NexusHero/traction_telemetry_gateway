@@ -5,8 +5,11 @@ from a (fictional) traction bus, validates them at a well-defined trust
 boundary, and exposes the latest values as JSON.
 
 It is a **DevSecOps reference project**: the interesting part is less the app
-itself and more the pipeline that ships it — static analysis, sanitizers,
-fuzzing, SBOM, dependency scanning, a distroless image and artifact signing.
+itself and more the pipeline that ships it — pre-commit hooks, secrets scanning,
+static analysis with a regression baseline, sanitizers (ASan/UBSan and TSan),
+coverage, fuzzing, SBOM, CVE and licence gates, a distroless image built from a
+scanned lockfile, signing with provenance, and releases that carry their own
+evidence.
 
 ```
 [telemetry producer] --POST /v1/frames (binary)--> [TTG gateway] --> JSON API
@@ -52,16 +55,81 @@ curl --data-binary @/tmp/frame.bin http://127.0.0.1:8080/v1/frames
 curl http://127.0.0.1:8080/v1/telemetry
 ```
 
-### Sanitizers
+### Local hooks
+
+Stage 1 of the pipeline. The cheapest feedback is the kind that never reaches a
+runner:
 
 ```sh
+pip install pre-commit
+pre-commit install                        # format + lint on every commit
+pre-commit install --hook-type pre-push   # full-history secrets scan
+pre-commit run --all-files                # one-off sweep
+```
+
+Hooks and CI share their configuration — `.clang-format`, `.clang-tidy` — so
+they cannot disagree. CI still re-checks everything: `--no-verify` exists, and a
+contributor who never ran `pre-commit install` has no hooks at all.
+
+The `clang-tidy` hook needs a compilation database and skips itself with a hint
+if there is none. To enable it, configure a build tree with
+`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
+
+### Sanitizers
+
+ASan and TSan ship incompatible runtimes and cannot coexist in one binary, so
+`TTG_SANITIZER` is single-valued rather than a set of switches — the invalid
+combination is unrepresentable instead of a link error.
+
+```sh
+# address = AddressSanitizer + UBSan. The parser's main risk is memory safety.
 cmake -S . -B build-asan -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
-  -DTTG_ENABLE_SANITIZERS=ON
+  -DTTG_SANITIZER=address
 cmake --build build-asan --parallel
 ctest --test-dir build-asan --output-on-failure
 ```
+
+```sh
+# thread = ThreadSanitizer. TelemetryStore is shared across httplib's pool.
+cmake -S . -B build-tsan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+  -DTTG_SANITIZER=thread
+cmake --build build-tsan --parallel
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-tsan --output-on-failure
+```
+
+TSan only reports what a test actually exercises, and the rest of the suite is
+single-threaded — a TSan run over it would pass without touching a single lock.
+`tests/test_concurrency.cpp` exists for this: writers on disjoint channel
+ranges, readers racing them for the whole run, and assertions on the invariants
+that must survive *any* interleaving (no lost update, no torn snapshot, the
+channel cap holding under contention).
+
+### Coverage
+
+```sh
+pip install gcovr
+conan install . --build=missing -of build-cov -s build_type=Debug
+cmake -S . -B build-cov -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=build-cov/conan_toolchain.cmake \
+  -DTTG_ENABLE_COVERAGE=ON
+cmake --build build-cov --parallel
+ctest --test-dir build-cov --output-on-failure
+gcovr --root . --filter 'src/' --filter 'include/' --print-summary
+```
+
+Coverage is **reported, never gated**. A threshold turns a diagnostic into a
+target, and the cheapest way to hit a coverage target is to write tests that
+execute code without asserting anything about it. The `--filter` flags matter
+too: without them the header-only bulk of nlohmann_json and gtest dominates the
+line count and the number stops describing this project.
+
+Coverage and the sanitizers are mutually exclusive by design — CMake rejects the
+combination rather than emitting line counts distorted by a sanitizer runtime.
 
 ### Fuzzing (Linux + Clang only)
 
@@ -158,6 +226,55 @@ conan audit scan . --context host --severity-level 9.0 -s build_type=Release
 on the image. `--context host` skips tool requires, which never reach the
 runtime image.
 
+### Licence policy (local)
+
+The other half of stage 4. A CVE is a bug you can patch; a copyleft obligation
+you shipped unknowingly is not fixable after the fact, so this is a gate rather
+than a report:
+
+```sh
+python scripts/license_check.py                       # resolve and check
+python scripts/license_check.py --graph graph.json    # check a saved graph
+```
+
+Default-deny against a permissive allowlist, and an **undeclared** licence counts
+as a violation — "the recipe did not say" is exactly the case worth catching
+early. The scope mirrors the SBOM (`build_tests=False`, host context only), so
+the policy covers what ships rather than what was needed to build it: a
+copyleft test framework never reaches a user, a copyleft runtime dependency
+does.
+
+Escape hatches are explicit and leave a trace in the diff:
+`--extra-allow MPL-2.0` extends the policy, `--waive some-pkg/1.2.3` exempts one
+package.
+
+### Static analysis baseline
+
+`clang-tidy` and `cppcheck` run as a **gate on regressions**, not on absolute
+cleanliness. `scripts/sast_gate.py` compares the analysers' output against
+`.sast-baseline.txt`: findings recorded there are tolerated, anything new fails
+the build.
+
+```sh
+# what CI runs
+python scripts/sast_gate.py check clang-tidy.txt cppcheck.txt
+
+# accept the current findings (review the diff - this is a policy change)
+python scripts/sast_gate.py update clang-tidy.txt cppcheck.txt
+```
+
+The baseline is keyed on `(file, check)` with a count, deliberately **not** on
+line numbers: a line-keyed baseline invalidates itself on the next edit above a
+finding, which trains people to regenerate it blindly — and a blindly
+regenerated baseline accepts whatever happens to be in the tree, gate included.
+Counting instead means the baseline survives edits while a *second* instance of
+an already-known check still fails.
+
+The baseline currently starts empty, so the gate is strict. If CI surfaces
+pre-existing findings, record them once with `update` and shrink the file from
+there; lowering a count is always safe, raising one needs a reason in the pull
+request that does it.
+
 ## HTTP API
 
 | Method | Path | Description |
@@ -178,13 +295,65 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 
 ## Pipeline
 
+### The eight stages, and where each one lives
+
+| # | Stage | Where | Gate |
+| --- | --- | --- | --- |
+| 1 | Pre-commit | `.pre-commit-config.yaml`, `ci.yml` → `format` | clang-format deviation fails |
+| 2 | Secrets scanning | `ci.yml` → `secrets-scan` (gitleaks, full history) | any finding fails |
+| 3 | SAST | `ci.yml` → `static-analysis`, `codeql.yml` | finding beyond `.sast-baseline.txt` fails |
+| 4 | SCA / supply chain | `supply-chain.yml` → `sbom-and-scan` | CVSS ≥ 9.0 fails; licence allowlist, default-deny |
+| 5 | Build & test | `ci.yml` → `build-and-test`, `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; coverage reported only |
+| 6 | Dynamic / fuzzing | `fuzzing.yml` (nightly, cumulative corpus) | any crash reproducer fails |
+| 7 | SBOM & signing | `supply-chain.yml` → `container`, `release.yml` | — (produces SBOMs, signatures, provenance) |
+| 8 | Gate & release | all of the above + `release.yml` | every gate above; release carries the evidence |
+
+### Workflows
+
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
-| `ci.yml` | push / PR | Build & test (Ubuntu + macOS), ASan/UBSan, clang-tidy + cppcheck, gitleaks |
-| `supply-chain.yml` | push / PR / tag | SBOM (CycloneDX via Conan), `conan audit` CVE gate, distroless image build, trivy scan, cosign sign |
-| `fuzzing.yml` | nightly | libFuzzer on the parser, 15 minutes |
+| `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks |
+| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image built **from the scanned lockfile**, trivy scan, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
+| `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
-| `codeql.yml` | push / PR | CodeQL analysis (C++) |
+| `codeql.yml` | push / PR / weekly | CodeQL analysis (C++) |
 
-See `SECURITY.md` for the vulnerability policy and the "baseline" rollout for
-static analysis, and `docs/threat-model.md` for the STRIDE model.
+### Release and evidence
+
+Tagging `v*` runs `release.yml`, which re-runs the gates against the exact tree
+being shipped and publishes two assets plus checksums:
+
+- `ttg-<version>-linux-x86_64.tar.gz` — the binary
+- `ttg-<version>-evidence.tar.gz` — SBOM, `conan.lock`, CVE scan, licence
+  verdict, analyser output, the SAST gate's verdict, coverage, and a
+  `MANIFEST.md` explaining what each file records
+
+Both carry a SLSA provenance attestation; the binary additionally carries an
+SBOM attestation. The container image is signed and attested separately, **by
+digest** rather than by tag — a tag is mutable, so signing `latest` says nothing
+about which bytes a consumer will actually pull.
+
+```sh
+sha256sum -c SHA256SUMS
+gh attestation verify ttg-<version>-linux-x86_64.tar.gz -R <owner>/<repo>
+cosign verify ghcr.io/<owner>/<repo>@sha256:<digest> \
+  --certificate-identity-regexp '^https://github.com/<owner>/<repo>/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The point of the bundle: an Actions artefact expires after 90 days and is bound
+to a workflow run. A release asset with a provenance attestation is bound to a
+version, and stays verifiable after everyone who ran the pipeline has forgotten
+it existed.
+
+`release.yml` can also be dispatched manually, which exercises the whole
+evidence path and uploads the result as a workflow artefact without creating a
+Release or consuming a version number.
+
+A release is refused if the tag and the version in `conanfile.py` disagree: a
+release labelled `v0.2.0` whose SBOM says `0.1.0` is worse than no SBOM, because
+the evidence contradicts the artefact it describes.
+
+See `SECURITY.md` for the vulnerability policy and the static-analysis baseline
+workflow, and `docs/threat-model.md` for the STRIDE model.

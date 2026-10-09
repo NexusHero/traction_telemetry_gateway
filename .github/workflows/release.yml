@@ -1,0 +1,332 @@
+name: Release
+
+# Stage 8. "Release with all evidence as versioned artefacts."
+#
+# The gates in ci.yml and supply-chain.yml decide whether a commit is fit to
+# ship. This workflow's job is to make that decision auditable afterwards: for
+# every tag it produces the binary, the bill of materials, the lockfile that
+# pins the graph, and the output of every gate - then signs the lot and
+# attaches it to a GitHub Release.
+#
+# The distinction that matters: an Actions artefact expires after 90 days and
+# is bound to a workflow run. A release asset with a provenance attestation is
+# bound to a version, and stays verifiable after everyone who ran the pipeline
+# has forgotten it existed.
+
+on:
+  push:
+    tags: ['v*']
+  # Dry runs. Produces and uploads the bundle as a workflow artefact without
+  # creating a Release, so the evidence path can be exercised without burning a
+  # version number on it.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (dry run, no Release is created)'
+        required: false
+        default: 'v0.0.0-dryrun'
+
+permissions:
+  contents: write          # create the Release and upload assets
+  id-token: write          # keyless signing
+  attestations: write      # SLSA provenance
+
+env:
+  CONAN_HOME: ${{ github.workspace }}/.conan2
+
+jobs:
+  release:
+    name: Build, collect evidence, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the changelog below walks tag history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF#refs/tags/}"
+            dry_run=false
+          else
+            version="${{ github.event.inputs.version }}"
+            dry_run=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+          echo "stem=ttg-${version}-linux-x86_64" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version (dry run: $dry_run)"
+
+          # The tag and the version in conanfile.py must agree. A release
+          # labelled v0.2.0 whose SBOM says 0.1.0 is worse than no SBOM: the
+          # evidence contradicts the artefact it describes.
+          declared=$(python -c "import re,pathlib;print(re.search(r'version\s*=\s*\"([^\"]+)\"',pathlib.Path('conanfile.py').read_text()).group(1))")
+          echo "conanfile.py declares: $declared"
+          if [ "$dry_run" = "false" ] && [ "${version#v}" != "$declared" ]; then
+            echo "::error::tag $version does not match conanfile.py version $declared"
+            exit 1
+          fi
+
+      - name: Install tooling
+        run: pip install "conan>=2.0" "gcovr>=7.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-release-${{ hashFiles('conanfile.py') }}
+
+      - name: Install analyzers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cppcheck
+
+      - name: Resolve dependency graph (conan.lock)
+        run: |
+          conan profile detect --force
+          conan install . --build=missing -of build -s build_type=Release \
+            --lockfile-out=build/conan.lock
+
+      - name: Build release binary
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build build --parallel
+
+      # A release that was never tested is not a release. These re-run rather
+      # than trusting ci.yml: the tag may point at a commit whose CI run has
+      # been garbage-collected, and the evidence bundle should contain results
+      # produced from the exact tree being shipped.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Prepare evidence directory
+        run: mkdir -p evidence
+
+      # -------------------------------------------------------------------
+      # Stage 3 evidence
+      # -------------------------------------------------------------------
+      - name: Static analysis
+        run: |
+          set +e
+          clang-tidy -p build src/*.cpp 2>&1 | tee evidence/clang-tidy.txt
+          tidy_status=${PIPESTATUS[0]}
+          cppcheck --enable=warning,performance,portability \
+            --suppress=missingIncludeSystem --std=c++20 \
+            --inline-suppr -I include src include \
+            --template='{file}:{line}:{column}: {severity}: {message} [{id}]' \
+            2>&1 | tee evidence/cppcheck.txt
+          cppcheck_status=${PIPESTATUS[0]}
+          set -e
+          [ "$tidy_status" -le 1 ] || { echo "::error::clang-tidy failed ($tidy_status)"; exit 1; }
+          [ "$cppcheck_status" -eq 0 ] || { echo "::error::cppcheck failed ($cppcheck_status)"; exit 1; }
+          # pipefail is essential here: without it the exit status of the whole
+          # pipeline is tee's, which is always 0, and the gate silently stops
+          # gating while still writing a report that says it failed.
+          set -o pipefail
+          python scripts/sast_gate.py check --baseline .sast-baseline.txt \
+            evidence/clang-tidy.txt evidence/cppcheck.txt | tee evidence/sast-gate.txt
+
+      # -------------------------------------------------------------------
+      # Stage 4 + 7 evidence
+      # -------------------------------------------------------------------
+      - name: Generate SBOM (CycloneDX)
+        run: ./scripts/sbom.sh -o evidence/sbom.cdx.json
+
+      - name: Licence policy gate
+        run: |
+          set -o pipefail
+          python scripts/license_check.py --json-out evidence/licenses.json \
+            | tee evidence/license-check.txt
+
+      - name: Dependency CVE gate
+        env:
+          CONAN_AUDIT_TOKEN: ${{ secrets.CONAN_AUDIT_TOKEN }}
+        run: |
+          if [ -z "$CONAN_AUDIT_TOKEN" ]; then
+            # Unlike a pull request, a release has no excuse for a missing
+            # token: shipping a version whose dependencies were never checked
+            # against a CVE database is the exact thing this stage exists for.
+            echo "::error::CONAN_AUDIT_TOKEN is not set - refusing to cut a release without a CVE scan."
+            exit 1
+          fi
+          conan audit provider auth conancenter --token="$CONAN_AUDIT_TOKEN"
+          conan audit scan . --context host --severity-level 9.0 \
+            -s build_type=Release -f json --out-file evidence/conan-audit.json
+
+      # -------------------------------------------------------------------
+      # Stage 5 evidence. Coverage is recorded, not gated - but a release
+      # bundle that states the number is how the number stays honest.
+      # -------------------------------------------------------------------
+      - name: Coverage report
+        run: |
+          conan install . --build=missing -of build-cov -s build_type=Debug
+          cmake -S . -B build-cov -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_TOOLCHAIN_FILE=build-cov/conan_toolchain.cmake \
+            -DTTG_ENABLE_COVERAGE=ON
+          cmake --build build-cov --parallel
+          ctest --test-dir build-cov --output-on-failure
+          gcovr --root . --filter 'src/' --filter 'include/' \
+            --exclude-unreachable-branches \
+            --txt evidence/coverage.txt \
+            --xml-pretty --output evidence/coverage.xml
+          cat evidence/coverage.txt
+
+      # -------------------------------------------------------------------
+      # The artefact itself
+      # -------------------------------------------------------------------
+      - name: Stage the binary
+        id: binary
+        run: |
+          stem="${{ steps.version.outputs.stem }}"
+          mkdir -p "dist/$stem"
+          cp build/ttg_server "dist/$stem/"
+          cp README.md LICENSE SECURITY.md "dist/$stem/"
+          strip --strip-unneeded "dist/$stem/ttg_server" || true
+          tar -czf "dist/${stem}.tar.gz" -C dist "$stem"
+          echo "tarball=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
+          ls -la dist/
+
+      - name: Bundle the evidence
+        id: bundle
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          bundle="dist/ttg-${version}-evidence.tar.gz"
+
+          # An index so the bundle is readable without knowing this workflow.
+          # Whoever opens it in two years is auditing a release, not reading CI.
+          cat > evidence/MANIFEST.md <<MANIFEST
+          # Release evidence - ${version}
+
+          Commit: ${GITHUB_SHA}
+          Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          | File | Stage | What it records |
+          | --- | --- | --- |
+          | \`clang-tidy.txt\` | 3 SAST | clang-tidy output, checks from \`.clang-tidy\` |
+          | \`cppcheck.txt\` | 3 SAST | cppcheck output |
+          | \`sast-gate.txt\` | 3 SAST | baseline comparison; the gate's verdict |
+          | \`sbom.cdx.json\` | 4/7 SBOM | CycloneDX bill of materials from the Conan graph |
+          | \`conan.lock\` | 4 SCA | the exact recipe revisions this binary was built from |
+          | \`conan-audit.json\` | 4 SCA | CVE scan, gate = CVSS >= 9.0 |
+          | \`licenses.json\` | 4 SCA | licence policy verdict per shipped component |
+          | \`license-check.txt\` | 4 SCA | same, human-readable |
+          | \`coverage.txt\` / \`.xml\` | 5 test | line/branch coverage (reported, never gated) |
+
+          Not in this bundle: the container image evidence. The image is a
+          separate artefact with its own SBOM and signature attached in the
+          registry - see supply-chain.yml and the verification commands in the
+          release notes.
+          MANIFEST
+
+          cp build/conan.lock evidence/
+          tar -czf "$bundle" -C . evidence
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          tar -tzf "$bundle"
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # Provenance binds "this file" to "this workflow, this commit, this
+      # runner". Verifiable later with:
+      #   gh attestation verify <file> -R <owner>/<repo>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            ${{ steps.binary.outputs.tarball }}
+            ${{ steps.bundle.outputs.bundle }}
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: ${{ steps.binary.outputs.tarball }}
+          sbom-path: evidence/sbom.cdx.json
+
+      - name: Release notes
+        id: notes
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          previous=$(git describe --tags --abbrev=0 "${version}^" 2>/dev/null || true)
+          {
+            echo "## ${version}"
+            echo ""
+            if [ -n "$previous" ]; then
+              echo "### Changes since ${previous}"
+              echo ""
+              git log --no-merges --pretty='- %s (%h)' "${previous}..${version}" 2>/dev/null \
+                || git log --no-merges --pretty='- %s (%h)' -20
+            else
+              echo "First tagged release."
+            fi
+            echo ""
+            echo "### Gates passed"
+            echo ""
+            echo "| Stage | Gate | Threshold |"
+            echo "| --- | --- | --- |"
+            echo "| 1 | clang-format | any deviation fails |"
+            echo "| 2 | gitleaks (full history) | any finding fails |"
+            echo "| 3 | clang-tidy + cppcheck | no finding beyond \`.sast-baseline.txt\` |"
+            echo "| 4 | conan audit | CVSS >= 9.0 fails |"
+            echo "| 4 | licence policy | permissive allowlist, default-deny |"
+            echo "| 5 | ctest, ASan/UBSan, TSan | any failure fails |"
+            echo "| 6 | libFuzzer (nightly) | any reproducer fails |"
+            echo "| 7 | trivy image scan | CRITICAL fails |"
+            echo ""
+            echo "Coverage is reported, not gated:"
+            echo ""
+            echo '```'
+            cat evidence/coverage.txt
+            echo '```'
+            echo ""
+            echo "### Verify"
+            echo ""
+            echo '```sh'
+            echo "# checksums"
+            echo "sha256sum -c SHA256SUMS"
+            echo ""
+            echo "# build provenance for the binary and the evidence bundle"
+            echo "gh attestation verify ttg-${version}-linux-x86_64.tar.gz -R ${GITHUB_REPOSITORY}"
+            echo "gh attestation verify ttg-${version}-evidence.tar.gz -R ${GITHUB_REPOSITORY}"
+            echo ""
+            echo "# the signed container image for this tag"
+            echo "cosign verify ghcr.io/${GITHUB_REPOSITORY}:${version#v} \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Dry runs stop here: everything above has been exercised, but no
+      # Release is created and no version number is consumed.
+      - name: Upload artefacts (dry run)
+        if: steps.version.outputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: |
+            dist/
+            release-notes.md
+
+      - name: Create Release
+        if: steps.version.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.version }}" \
+            --title "${{ steps.version.outputs.version }}" \
+            --notes-file release-notes.md \
+            dist/*.tar.gz \
+            dist/SHA256SUMS
