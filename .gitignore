@@ -21,7 +21,19 @@ conan.lock
 # Fuzzing
 artifacts/
 fuzz-corpus/
+fuzz-corpus-min/
 crash-*
+
+# Pipeline reports and evidence. All of these are produced by a run and
+# collected as versioned artefacts; the one file that IS committed is
+# .sast-baseline.txt, because the gate reads it as input.
+coverage/
+evidence/
+clang-tidy.txt
+cppcheck.txt
+*.gcda
+*.gcno
+*.gcov
 
 # Python
 __pycache__/

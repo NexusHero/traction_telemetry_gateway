@@ -4,16 +4,24 @@ on:
   schedule:
     - cron: '0 2 * * *'          # nightly
   workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzzing time in seconds'
+        required: false
+        default: '900'
 
 concurrency:
   group: fuzzing-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   fuzz:
     name: libFuzzer (protocol parser)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -34,14 +42,69 @@ jobs:
       - name: Build fuzzer
         run: cmake --build build-fuzz --target fuzz_frame_parser
 
-      - name: Run fuzzer (15 minutes)
+      # Without this, every nightly run restarts from the three seeds in
+      # tests/corpus and re-derives the same shallow coverage. libFuzzer's value
+      # is cumulative: the corpus is the state that carries forward, so it is
+      # restored here and saved again below.
+      #
+      # restore-keys makes the lookup a prefix match, so a run picks up the most
+      # recent corpus even though its own key (with the run id) never existed
+      # before. The key must be unique per run because a cache entry is
+      # immutable once written.
+      - name: Restore fuzzing corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Seed corpus
         run: |
           mkdir -p fuzz-corpus artifacts
+          # Seeds are copied in on every run: the checked-in ones are the
+          # documented interesting cases, and a cache miss must not silently
+          # degrade the run to a cold start from nothing.
           cp tests/corpus/* fuzz-corpus/ 2>/dev/null || true
+          echo "corpus entries before run: $(find fuzz-corpus -type f | wc -l)"
+
+      - name: Run fuzzer
+        env:
+          DURATION: ${{ github.event.inputs.duration || '900' }}
+        run: |
+          set +e
           ./build-fuzz/fuzz_frame_parser fuzz-corpus/ \
-            -max_total_time=900 \
+            -max_total_time="$DURATION" \
             -print_final_stats=1 \
             -artifact_prefix=artifacts/
+          echo "libfuzzer exit status: $?"
+          # The exit status is deliberately not the verdict. libFuzzer also
+          # returns non-zero on a timeout with no finding, while a genuine crash
+          # always leaves a reproducer in artifacts/ - so the artifacts are what
+          # the gate below inspects.
+          exit 0
+
+      # Minimising keeps the cached corpus from growing without bound: -merge
+      # rewrites it as the smallest set of inputs that preserves the coverage
+      # reached so far. Skipped if the corpus is empty, where -merge errors out.
+      - name: Minimise corpus for the next run
+        run: |
+          if [ -n "$(find fuzz-corpus -type f -print -quit)" ]; then
+            mkdir -p fuzz-corpus-min
+            ./build-fuzz/fuzz_frame_parser -merge=1 fuzz-corpus-min fuzz-corpus || true
+            if [ -n "$(find fuzz-corpus-min -type f -print -quit)" ]; then
+              rm -rf fuzz-corpus
+              mv fuzz-corpus-min fuzz-corpus
+            fi
+          fi
+          echo "corpus entries after minimisation: $(find fuzz-corpus -type f | wc -l)"
+
+      - name: Save fuzzing corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}
 
       - name: Upload corpus and crash artifacts
         if: always()
@@ -52,3 +115,23 @@ jobs:
             artifacts/
             fuzz-corpus/
           if-no-files-found: ignore
+
+      # The actual gate. A reproducer in artifacts/ is a crash, a leak or a
+      # timeout the parser must not have - ttg::parse_frame is documented as
+      # total. Previously a nightly crash left a file in an artifact nobody
+      # opened and the job still reported green.
+      - name: Fail on crash reproducers
+        run: |
+          found=$(find artifacts -type f 2>/dev/null | wc -l)
+          if [ "$found" -gt 0 ]; then
+            echo "::error::libFuzzer produced $found reproducer(s) - the parser is not total."
+            find artifacts -type f -printf '%p (%s bytes)\n' | while read -r line; do
+              echo "  $line"
+            done
+            echo ""
+            echo "Reproduce locally with:"
+            echo "  ./build-fuzz/fuzz_frame_parser <the artifact file>"
+            echo "Download it from the 'fuzzing-results' artifact of this run."
+            exit 1
+          fi
+          echo "No reproducers: the parser survived the run."

@@ -10,12 +10,53 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   BUILD_TYPE: Release
   # Conan reads this to find the local profile. Nothing else relies on it.
   CONAN_HOME: ${{ github.workspace }}/.conan2
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1. The same checks .pre-commit-config.yaml runs locally. Hooks are
+  # advisory - `--no-verify` exists, and a contributor who never ran
+  # `pre-commit install` has none - so the gate lives here as well.
+  # ---------------------------------------------------------------------------
+  format:
+    name: Format (clang-format)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the major version the pre-commit hook uses
+      # (mirrors-clang-format v19.x). clang-format's output changes between
+      # major releases, so an unpinned runner would reformat files the hook
+      # considers clean and the gate would contradict the hook.
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-19
+          sudo update-alternatives --install /usr/bin/clang-format clang-format \
+            /usr/bin/clang-format-19 100
+
+      - name: Check formatting
+        run: |
+          clang-format --version
+          # --Werror turns "would reformat" into a failure; --dry-run keeps the
+          # tree untouched so the diff below reflects what the tool wants.
+          find src include tests benchmarks -type f \( -name '*.cpp' -o -name '*.hpp' \) \
+            -print0 | xargs -0 clang-format --dry-run --Werror
+
+      - name: Show the required diff
+        if: failure()
+        run: |
+          find src include tests benchmarks -type f \( -name '*.cpp' -o -name '*.hpp' \) \
+            -print0 | xargs -0 clang-format -i
+          git diff --color=always
+          echo "::error::Run 'pre-commit run --all-files' (or clang-format -i) and commit the result."
+
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -57,9 +98,26 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # ---------------------------------------------------------------------------
+  # Stage 5. One sanitizer per job: ASan and TSan ship incompatible runtimes and
+  # cannot be linked into the same binary, which is why TTG_SANITIZER is
+  # single-valued rather than a set of booleans.
+  # ---------------------------------------------------------------------------
   sanitize:
-    name: ASan / UBSan
+    name: ${{ matrix.label }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: address
+            label: ASan / UBSan
+            # Without this, a UBSan diagnostic is printed and the process still
+            # exits 0 - CI would read that as a pass.
+            options: 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1'
+          - sanitizer: thread
+            label: TSan
+            options: 'TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1'
     steps:
       - uses: actions/checkout@v4
 
@@ -74,24 +132,102 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CONAN_HOME }}
-          key: conan-sanitize-${{ hashFiles('conanfile.py') }}
+          key: conan-san-${{ matrix.sanitizer }}-${{ hashFiles('conanfile.py') }}
 
       - run: conan profile detect --force
       - run: conan install . --build=missing -of build -s build_type=Debug
 
-      - name: Configure (sanitizers)
+      - name: Configure (TTG_SANITIZER=${{ matrix.sanitizer }})
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
-          -DTTG_ENABLE_SANITIZERS=ON
+          -DTTG_SANITIZER=${{ matrix.sanitizer }}
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run tests under ASan/UBSan
+      # tests/test_concurrency.cpp is what gives TSan something to analyse: the
+      # rest of the suite is single-threaded, so a TSan run over it would pass
+      # without ever exercising a lock.
+      - name: Run tests under ${{ matrix.label }}
+        run: ${{ matrix.options }} ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Stage 5, the metric half. Coverage is reported, never gated: a threshold
+  # turns a diagnostic into a target, and the usual way to hit a coverage
+  # target is to write tests that execute code without asserting on it.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Coverage (gcovr)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan and gcovr
+        run: pip install "conan>=2.0" "gcovr>=7.0"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-coverage-${{ hashFiles('conanfile.py') }}
+
+      - run: conan profile detect --force
+      - run: conan install . --build=missing -of build -s build_type=Debug
+
+      - name: Configure (instrumented)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+          -DTTG_ENABLE_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
+      # --filter restricts the report to our own code: without it, the headers
+      # of nlohmann_json and gtest dominate the line count and the number stops
+      # meaning anything about this project.
+      - name: Report coverage
+        run: |
+          mkdir -p coverage
+          gcovr --root . \
+            --filter 'src/' --filter 'include/' \
+            --exclude-unreachable-branches \
+            --print-summary \
+            --txt coverage/coverage.txt \
+            --xml-pretty --output coverage/coverage.xml \
+            --html-details coverage/coverage.html
+          {
+            echo '### Coverage'
+            echo ''
+            echo '```'
+            cat coverage/coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Stage 3. Both analysers run, then scripts/sast_gate.py decides: findings
+  # recorded in .sast-baseline.txt are tolerated, anything new fails the build.
+  # That is step 2 of the rollout in SECURITY.md - a gate that only blocks on
+  # regressions is one a team keeps switched on.
+  # ---------------------------------------------------------------------------
   static-analysis:
     name: SAST (clang-tidy + cppcheck)
     runs-on: ubuntu-latest
@@ -126,22 +262,47 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # clang-tidy and cppcheck run as reporting stages. To turn them into a
-      # hard gate, add --error-exitcode=1 (cppcheck) / -warnings-as-errors
-      # (clang-tidy) once the baseline of the codebase is clean -- see
-      # SECURITY.md for the "baseline" workflow.
+      # No -checks= flag: that would *replace* the Checks list in .clang-tidy,
+      # silently dropping the suppressions recorded there and making CI enforce
+      # a different rule set than the editor and the pre-commit hook.
       - name: clang-tidy
-        continue-on-error: true
         run: |
-          clang-tidy -p build src/*.cpp \
-            -checks="bugprone-*,cert-*,clang-analyzer-*,performance-*" 2>&1 | tee clang-tidy.txt
+          set +e
+          clang-tidy -p build src/*.cpp 2>&1 | tee clang-tidy.txt
+          status=${PIPESTATUS[0]}
+          echo "clang-tidy exit status: $status"
+          # 1 means "emitted diagnostics", which the gate below judges. Above
+          # that, clang-tidy itself failed (bad compilation database, crash) and
+          # its report cannot be trusted.
+          if [ "$status" -gt 1 ]; then
+            echo "::error::clang-tidy failed to run (exit $status)"
+            exit "$status"
+          fi
 
+      # --template pins the output to the shape scripts/sast_gate.py parses.
+      # cppcheck's default template is version-dependent; a runner upgrade that
+      # changed it would make every finding unparseable, and an unparseable
+      # report looks exactly like a clean one.
       - name: cppcheck
-        continue-on-error: true
         run: |
+          set +e
           cppcheck --enable=warning,performance,portability \
             --suppress=missingIncludeSystem --std=c++20 \
-            --inline-suppr -I include src include 2>&1 | tee cppcheck.txt
+            --inline-suppr -I include src include \
+            --template='{file}:{line}:{column}: {severity}: {message} [{id}]' \
+            2>&1 | tee cppcheck.txt
+          status=${PIPESTATUS[0]}
+          echo "cppcheck exit status: $status"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::cppcheck failed to run (exit $status)"
+            exit "$status"
+          fi
+
+      - name: Gate on new findings
+        run: |
+          python scripts/sast_gate.py check \
+            --baseline .sast-baseline.txt \
+            clang-tidy.txt cppcheck.txt
 
       - name: Upload analyzer reports
         if: always()
@@ -153,6 +314,10 @@ jobs:
             cppcheck.txt
           if-no-files-found: ignore
 
+  # ---------------------------------------------------------------------------
+  # Stage 2. fetch-depth: 0 so the whole history is scanned, not just the tip -
+  # a key that was committed and then removed is still a leaked key.
+  # ---------------------------------------------------------------------------
   secrets-scan:
     name: Secrets scan (gitleaks)
     runs-on: ubuntu-latest
