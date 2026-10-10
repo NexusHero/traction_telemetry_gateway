@@ -18,3 +18,4 @@
 /.zap/                  @NexusHero
 /conan.lock             @NexusHero
 /ci/                    @NexusHero
+/compliance/            @NexusHero

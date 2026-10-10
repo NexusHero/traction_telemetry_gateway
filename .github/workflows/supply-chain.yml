@@ -107,6 +107,18 @@ jobs:
           done
           ls -la evidence/
 
+      # The compliance report on every change, not only at release: a pull
+      # request that breaks a control shows it in its own run summary, while
+      # it can still be fixed. This run has no release binary, so controls
+      # that need one read "not assessed" - the release report covers them.
+      - name: Compliance report (CRA / BSI TR-03183-2)
+        if: always()
+        run: |
+          python scripts/compliance_report.py --evidence evidence \
+            --out-md evidence/compliance-report.md \
+            --out-json evidence/compliance-report.json
+          cat evidence/compliance-report.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload SBOM and reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -464,5 +464,34 @@ A release is refused if the tag and the version in `conanfile.py` disagree: a
 release labelled `v0.2.0` whose SBOM says `0.1.0` is worse than no SBOM, because
 the evidence contradicts the artefact it describes.
 
+### Compliance report (CRA, BSI TR-03183-2)
+
+`scripts/compliance_report.py` turns a run's evidence into a report against
+the EU Cyber Resilience Act (Annex I Parts I and II, Art. 13(8), Art. 14) and
+the SBOM fields of BSI TR-03183-2. The mapping from requirement to check lives
+in [`compliance/controls.toml`](compliance/controls.toml), reviewed like any
+other gate configuration.
+
+- **Every change** (`supply-chain.yml`): the report is written to the run
+  summary, so a pull request that breaks a control shows it before merge.
+- **Every release** (`release.yml`): the report is part of the evidence bundle
+  and covered by its provenance attestation; the summary goes into the release
+  notes.
+
+Each control's status is derived from its checks, never typed in, and every
+piece of evidence is labelled by kind - *execution* (this run produced it),
+*configuration* (a gate enforces it), *document* (a reviewed document states
+it) - and hashed in an inventory. Gaps are reported, not hidden: the report is
+designed to show an assessor what is shown and what is not.
+
+```sh
+# against a downloaded evidence bundle, or a local evidence/ directory
+python scripts/compliance_report.py --evidence evidence \
+  --out-md compliance-report.md --out-json compliance-report.json
+```
+
+It supports the technical documentation of a conformity assessment; it is not a
+certification or a declaration of conformity.
+
 See `SECURITY.md` for the vulnerability policy and the static-analysis baseline
 workflow, and `docs/threat-model.md` for the STRIDE model.

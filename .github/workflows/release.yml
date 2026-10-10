@@ -262,6 +262,18 @@ jobs:
           echo "tarball=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
           ls -la dist/
 
+      # Last step that writes into evidence/, so every file the report hashes
+      # is final. It lands in the bundle and is covered by its provenance
+      # attestation: the report is signed together with what it describes.
+      - name: Compliance report (CRA / BSI TR-03183-2)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python scripts/compliance_report.py --evidence evidence \
+            --version "$VERSION" \
+            --out-md evidence/compliance-report.md \
+            --out-json evidence/compliance-report.json
+
       - name: Bundle the evidence
         id: bundle
         env:
@@ -292,6 +304,7 @@ jobs:
           | \`ctest.txt\` | 5 test | unit tests built with the shipping toolchain (Dockerfile test stage) |
           | \`coverage.txt\` / \`.xml\` | 5 test | line/branch coverage (reported, never gated) |
           | \`hardening.txt\` | 7 build | exploit mitigations read from the shipped ELF |
+          | \`compliance-report.md\` / \`.json\` | 8 release | CRA Annex I / Art. 13-14 and BSI TR-03183-2 controls, evaluated against this bundle |
 
           Not in this bundle: the container image evidence. The image is a
           separate artefact with its own SBOM and signature attached in the
@@ -369,6 +382,12 @@ jobs:
             echo '```'
             cat evidence/coverage.txt
             echo '```'
+            echo ""
+            echo "### Compliance"
+            echo ""
+            echo "Evaluated against this release's evidence; full report in the evidence bundle (\`evidence/compliance-report.md\`)."
+            echo ""
+            sed -n '/^## Summary/,/^## Open items/p' evidence/compliance-report.md | sed '1d;$d'
             echo ""
             echo "### Verify"
             echo ""
