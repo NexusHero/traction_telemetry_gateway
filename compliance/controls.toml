@@ -1,0 +1,287 @@
+# Compliance control catalogue.
+#
+# Each control is one regulatory requirement, mapped to the checks that
+# produce evidence for it. scripts/compliance_report.py evaluates the checks
+# against the evidence of a pipeline run and renders the result.
+#
+# The catalogue is the reviewed, versioned part: a change to how a requirement
+# is judged is a diff here, with a reason in the pull request, exactly like a
+# change to a gate threshold. CODEOWNERS covers /compliance/ for that reason.
+#
+# Fields
+#   id          stable identifier used in the report
+#   framework   key into [frameworks]
+#   ref         article / annex reference in the source text
+#   requirement the requirement, paraphrased (not a legal quotation)
+#   also        indicative cross-references to other standards
+#   checks      automated checks, implemented in scripts/compliance_report.py
+#   assessment  for what checks cannot decide on their own:
+#                 partial          the checks pass but do not cover all of it
+#                 gap              known not met; tracked, not hidden
+#                 not_applicable   does not apply to this product (say why)
+#                 organisational   a process duty; evidence is held outside
+#                                  the pipeline (named in `note`)
+#   note        the human-readable justification an assessor reads
+#
+# A control's status is derived, never typed in: a failing check overrides
+# any assessment, so a regression cannot hide behind an earlier "met".
+
+[meta]
+product = "Traction Telemetry Gateway (ttg_server)"
+manufacturer = "Suhay Sevinc (reference project)"
+disclaimer = """
+This report is generated from the evidence of one pipeline run. It supports a
+conformity assessment - for the CRA, the technical documentation of Annex VII
+and the internal control procedure (module A) - but it is not a certification,
+an EU declaration of conformity, or legal advice. Requirement texts are
+paraphrased; the Official Journal text is authoritative. Cross-references to
+other standards are indicative. Controls marked organisational need evidence
+that no pipeline can produce (processes, contracts, records) and must be
+completed by the manufacturer."""
+
+[frameworks.CRA]
+name = "EU Cyber Resilience Act - Regulation (EU) 2024/2847"
+note = "Vulnerability and incident reporting (Art. 14) applies from 11 September 2026; the remaining obligations from 11 December 2027."
+
+[frameworks.BSI-TR-03183-2]
+name = "BSI TR-03183-2 - Cyber Resilience Requirements, Part 2: Software Bill of Materials"
+note = "German technical guideline that specifies the SBOM expected under CRA Annex I Part II (1)."
+
+# ---------------------------------------------------------------------------
+# CRA Annex I, Part I - cybersecurity properties of the product
+# ---------------------------------------------------------------------------
+
+[[control]]
+id = "CRA-I.1"
+framework = "CRA"
+ref = "Annex I, Part I (1); Art. 13(2)-(3)"
+requirement = "Designed, developed and produced to ensure a level of cybersecurity appropriate to the risks, based on a documented cybersecurity risk assessment."
+also = ["IEC 62443-4-1 SR-2 (threat model)", "CLC/TS 50701 (risk assessment)"]
+checks = ["threat_model"]
+assessment = "partial"
+note = "A STRIDE threat model covers the trust boundaries. A risk assessment in the sense of Art. 13(2) additionally needs the intended purpose, the operating environment and an explicit risk acceptance by the manufacturer."
+
+[[control]]
+id = "CRA-I.2a"
+framework = "CRA"
+ref = "Annex I, Part I (2)(a)"
+requirement = "Made available on the market without known exploitable vulnerabilities."
+also = ["IEC 62443-4-1 SVV-3", "IEC 62443-4-1 SM-9"]
+checks = ["dependency_cve_scan", "image_cve_gates", "cve_rescan_scheduled"]
+note = "Dependencies are scanned against the Conan audit database, the image with trivy and grype, and both are rescanned nightly against current advisories. Gate: CVSS >= 9.0 / CRITICAL with a fix available; findings below the gate are listed, not hidden."
+
+[[control]]
+id = "CRA-I.2b"
+framework = "CRA"
+ref = "Annex I, Part I (2)(b)"
+requirement = "Made available with a secure-by-default configuration, with the possibility to reset to the original state."
+also = ["IEC 62443-4-1 SG-3"]
+checks = ["minimal_runtime_image"]
+assessment = "partial"
+note = "Runs as non-root in a distroless image without a shell, package manager or TLS library; responses carry restrictive security headers by default. The server binds 0.0.0.0 by default, which suits a container but should be stated in user guidance; it holds no persistent state, so a restart is the reset."
+
+[[control]]
+id = "CRA-I.2c"
+framework = "CRA"
+ref = "Annex I, Part I (2)(c)"
+requirement = "Vulnerabilities can be addressed through security updates."
+also = ["IEC 62443-4-1 SUM-1..5"]
+checks = ["dependency_updates_automated", "lockfile_enforced"]
+assessment = "partial"
+note = "Dependency updates arrive as reviewed pull requests (Renovate, Dependabot) against a committed lockfile, and every release is rebuilt from it. Automatic installation of updates on deployed units is the operator's update channel and outside this repository."
+
+[[control]]
+id = "CRA-I.2d"
+framework = "CRA"
+ref = "Annex I, Part I (2)(d)"
+requirement = "Protection from unauthorised access by appropriate control mechanisms (authentication, identity or access management)."
+also = ["IEC 62443-4-2 FR 1, FR 2"]
+assessment = "gap"
+note = "Not implemented. The ingest endpoint is unauthenticated by design of the current scope (docs/threat-model.md, threat S). Required before any deployment: mTLS or message authentication on POST /v1/frames."
+
+[[control]]
+id = "CRA-I.2e"
+framework = "CRA"
+ref = "Annex I, Part I (2)(e)"
+requirement = "Protect the confidentiality of stored, transmitted or otherwise processed data, e.g. by encryption."
+also = ["IEC 62443-4-2 FR 4"]
+assessment = "partial"
+note = "No data at rest (volatile store). Transport encryption is delegated to a TLS-terminating proxy by design (threat model, assumptions); that dependency must be part of the user guidance."
+
+[[control]]
+id = "CRA-I.2f"
+framework = "CRA"
+ref = "Annex I, Part I (2)(f)"
+requirement = "Protect the integrity of data, commands, programs and configuration against unauthorised manipulation."
+also = ["IEC 62443-4-1 SM-6", "IEC 62443-4-2 FR 3"]
+checks = ["artefact_signing", "actions_pinned"]
+assessment = "partial"
+note = "Programs: release artefacts carry SLSA build provenance and an SBOM attestation, images are cosign-signed by digest, and the pipeline itself is pinned by commit SHA. Data: frames carry a CRC-16, which detects corruption but not deliberate manipulation; that needs the authentication of CRA-I.2d."
+
+[[control]]
+id = "CRA-I.2g"
+framework = "CRA"
+ref = "Annex I, Part I (2)(g)"
+requirement = "Process only data that are adequate, relevant and limited to what is necessary (data minimisation)."
+assessment = "partial"
+note = "Only the latest value per telemetry channel is kept, in memory, bounded by max_channels. No personal data is processed by design; confirming that is part of the deployment's data-protection assessment."
+
+[[control]]
+id = "CRA-I.2h"
+framework = "CRA"
+ref = "Annex I, Part I (2)(h)"
+requirement = "Protect the availability of essential functions, including resilience against denial-of-service attacks."
+also = ["IEC 62443-4-1 SVV-3", "IEC 62443-4-2 FR 7"]
+checks = ["fuzzing_continuous", "dast_configured", "unit_tests"]
+note = "Body size, channel count and store size are bounded; the parser is total and fuzzed nightly and on every pull request; the running container is probed by ZAP and Schemathesis. Rate limiting is not implemented and belongs in front of the service."
+
+[[control]]
+id = "CRA-I.2i"
+framework = "CRA"
+ref = "Annex I, Part I (2)(i)"
+requirement = "Minimise the negative impact on the availability of services provided by other devices or networks."
+assessment = "partial"
+note = "The gateway only answers requests and initiates no outbound connections. Its behaviour under load in the target network is an integration test of the deployment, not of this repository."
+
+[[control]]
+id = "CRA-I.2j"
+framework = "CRA"
+ref = "Annex I, Part I (2)(j)"
+requirement = "Limit attack surfaces, including external interfaces."
+also = ["IEC 62443-4-1 SD-4"]
+checks = ["minimal_runtime_image", "api_contract_enforced"]
+note = "Six endpoints, specified in docs/openapi.yaml and enforced by contract fuzzing (unknown methods 405/501). The runtime image holds the binary and glibc only - no shell, no package manager, no libssl."
+
+[[control]]
+id = "CRA-I.2k"
+framework = "CRA"
+ref = "Annex I, Part I (2)(k)"
+requirement = "Reduce the impact of an incident using appropriate exploitation mitigation mechanisms and techniques."
+also = ["IEC 62443-4-1 SD-4", "IEC 62443-4-1 SI-2"]
+checks = ["binary_hardening"]
+note = "Read from the shipped ELF, not from build flags: PIE, full RELRO, BIND_NOW, non-executable stack, stack canaries; FORTIFY_SOURCE and CET/PAC+BTI are compiled in."
+
+[[control]]
+id = "CRA-I.2l"
+framework = "CRA"
+ref = "Annex I, Part I (2)(l)"
+requirement = "Provide security-related information by recording and monitoring relevant internal activity."
+assessment = "partial"
+note = "Counters for received and rejected frames are exposed at /v1/stats. A security event log (rejections with source, attributable to a caller) is follow-up work (threat model, threat R)."
+
+[[control]]
+id = "CRA-I.2m"
+framework = "CRA"
+ref = "Annex I, Part I (2)(m)"
+requirement = "Users can securely and permanently remove all data and settings."
+assessment = "not_applicable"
+note = "The service stores nothing persistently; all data is lost on process exit."
+
+# ---------------------------------------------------------------------------
+# CRA Annex I, Part II - vulnerability handling by the manufacturer
+# ---------------------------------------------------------------------------
+
+[[control]]
+id = "CRA-II.1"
+framework = "CRA"
+ref = "Annex I, Part II (1)"
+requirement = "Identify and document vulnerabilities and components, including a machine-readable SBOM covering at least the top-level dependencies."
+also = ["IEC 62443-4-1 SM-9", "BSI TR-03183-2"]
+checks = ["sbom_present"]
+note = "CycloneDX SBOM generated from the locked Conan graph for every run, attested to the release artefact. Field-level conformance to the German guideline is assessed separately (BSI-TR-03183-2)."
+
+[[control]]
+id = "CRA-II.2"
+framework = "CRA"
+ref = "Annex I, Part II (2)"
+requirement = "Address and remediate vulnerabilities without delay, including by providing security updates."
+also = ["IEC 62443-4-1 DM-1..6", "IEC 62443-4-1 SUM-2"]
+checks = ["cve_rescan_scheduled", "dependency_updates_automated"]
+assessment = "partial"
+note = "Detection is automated: the nightly rescan opens a tracking issue, and update pull requests arrive automatically. Remediation times are a process commitment of the manufacturer (target times per severity belong in SECURITY.md)."
+
+[[control]]
+id = "CRA-II.3"
+framework = "CRA"
+ref = "Annex I, Part II (3)"
+requirement = "Apply effective and regular tests and reviews of the security of the product."
+also = ["IEC 62443-4-1 SI-1", "IEC 62443-4-1 SVV-1..3"]
+checks = ["sast_gate", "unit_tests", "sanitizers_in_ci", "fuzzing_continuous", "dast_configured", "coverage_reported"]
+note = "Every change: SAST with a regression baseline, CodeQL, unit tests on x86-64 and AArch64, ASan/UBSan and TSan, fuzz smoke, DAST. Nightly: deep fuzzing and CVE rescan. Penetration testing by a third party (SVV-4) is not part of the pipeline."
+
+[[control]]
+id = "CRA-II.4"
+framework = "CRA"
+ref = "Annex I, Part II (4)"
+requirement = "Once a security update is available, publicly disclose information about fixed vulnerabilities."
+also = ["IEC 62443-4-1 DM-5"]
+assessment = "organisational"
+note = "Channel: GitHub Security Advisories of this repository. Evidence is the published advisory per fixed vulnerability, not a pipeline output."
+
+[[control]]
+id = "CRA-II.5"
+framework = "CRA"
+ref = "Annex I, Part II (5)"
+requirement = "Put in place and enforce a policy on coordinated vulnerability disclosure."
+also = ["IEC 62443-4-1 DM-1", "ISO/IEC 29147"]
+checks = ["security_policy"]
+note = "SECURITY.md defines private reporting, acknowledgement and update times, and coordinated disclosure."
+
+[[control]]
+id = "CRA-II.6"
+framework = "CRA"
+ref = "Annex I, Part II (6)"
+requirement = "Facilitate the reporting of vulnerabilities, including by providing a contact address."
+also = ["IEC 62443-4-1 DM-1"]
+checks = ["security_policy"]
+note = "Private vulnerability reporting is linked from SECURITY.md."
+
+[[control]]
+id = "CRA-II.7"
+framework = "CRA"
+ref = "Annex I, Part II (7)"
+requirement = "Provide mechanisms to securely distribute updates."
+also = ["IEC 62443-4-1 SUM-4", "IEC 62443-4-1 SM-6"]
+checks = ["artefact_signing", "release_requires_green_ci"]
+note = "Releases are published with checksums, SLSA provenance and an SBOM attestation; images are cosign-signed by digest. The release notes carry the verification commands."
+
+[[control]]
+id = "CRA-II.8"
+framework = "CRA"
+ref = "Annex I, Part II (8)"
+requirement = "Disseminate security updates without delay and free of charge, with advisory messages."
+also = ["IEC 62443-4-1 SUM-5"]
+assessment = "organisational"
+note = "Releases are public and free of charge. Timeliness and advisory messages are a process commitment, evidenced by the release history and advisories."
+
+# ---------------------------------------------------------------------------
+# CRA obligations of the manufacturer outside Annex I
+# ---------------------------------------------------------------------------
+
+[[control]]
+id = "CRA-13.8"
+framework = "CRA"
+ref = "Art. 13(8)"
+requirement = "Determine and state a support period during which vulnerabilities are handled - at least five years unless the product is expected to be in use for less."
+checks = ["support_period_declared"]
+note = "SECURITY.md must state the support period with an end date. Rail vehicles run for decades; the period should reflect that."
+
+[[control]]
+id = "CRA-14"
+framework = "CRA"
+ref = "Art. 14(1)-(4)"
+requirement = "Report actively exploited vulnerabilities and severe incidents via the single reporting platform: early warning within 24 h, notification within 72 h, final report afterwards."
+assessment = "organisational"
+note = "In force since 11 September 2026. A pipeline can detect (nightly rescan, tracking issue) but reporting is a duty of the manufacturer: a named role, a runbook and records of submissions are the evidence."
+
+# ---------------------------------------------------------------------------
+# BSI TR-03183-2 - SBOM content
+# ---------------------------------------------------------------------------
+
+[[control]]
+id = "BSI-TR-03183-2"
+framework = "BSI-TR-03183-2"
+ref = "Sections 4-5 (format and required fields)"
+requirement = "SBOM in CycloneDX >= 1.5 or SPDX >= 2.2.1, with creator and timestamp, and per component: creator, name, version, licence, dependencies and a SHA-512 hash."
+checks = ["sbom_tr03183_fields"]
+note = "Evaluated field by field against the SBOM of this run; each missing field is listed in the evidence column."
