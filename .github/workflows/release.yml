@@ -50,7 +50,7 @@ jobs:
           fetch-depth: 0   # the changelog below walks tag history
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       # The dispatch input reaches the shell through env, never through ${{ }}
       # template expansion: expanded inline it becomes part of the script, so
@@ -220,7 +220,7 @@ jobs:
             exit 1
           fi
           conan audit provider auth conancenter --token="$CONAN_AUDIT_TOKEN"
-          conan audit scan . --context host --severity-level 9.0 \
+          conan audit scan . --context host --severity-level 7.0 \
             -s build_type=Release -f json --out-file evidence/conan-audit.json
 
       # -------------------------------------------------------------------
@@ -298,7 +298,7 @@ jobs:
           | \`sast-gate.txt\` | 3 SAST | baseline comparison; the gate's verdict |
           | \`sbom.cdx.json\` | 4/7 SBOM | CycloneDX bill of materials from the Conan graph |
           | \`conan.lock\` | 4 SCA | the exact recipe revisions this binary was built from |
-          | \`conan-audit.json\` | 4 SCA | CVE scan, gate = CVSS >= 9.0 |
+          | \`conan-audit.json\` | 4 SCA | CVE scan, gate = CVSS >= 7.0 |
           | \`licenses.json\` | 4 SCA | licence policy verdict per shipped component |
           | \`license-check.txt\` | 4 SCA | same, human-readable |
           | \`ctest.txt\` | 5 test | unit tests built with the shipping toolchain (Dockerfile test stage) |
@@ -367,15 +367,15 @@ jobs:
             echo "| 2 | gitleaks (full history) | any finding fails |"
             echo "| 2 | zizmor workflow audit | any finding fails |"
             echo "| 3 | clang-tidy + cppcheck | no finding beyond \`.sast-baseline.txt\` |"
-            echo "| 4 | conan audit | CVSS >= 9.0 fails |"
+            echo "| 4 | conan audit | CVSS >= 7.0 fails |"
             echo "| 4 | licence policy | permissive allowlist, default-deny |"
             echo "| 5 | ctest, ASan/UBSan, TSan | any failure fails |"
             echo "| 6 | libFuzzer (nightly) | any reproducer fails |"
             echo "| 6 | ZAP API scan (DAST) | any warning beyond \`.zap/rules.tsv\` fails |"
             echo "| 6 | Schemathesis contract fuzzing | any failure fails |"
             echo "| 7 | ELF hardening (PIE, RELRO, BIND_NOW, NX, canary) | any missing fails |"
-            echo "| 7 | trivy image scan | CRITICAL (fixable) fails |"
-            echo "| 7 | grype image scan | CRITICAL (fixable) fails |"
+            echo "| 7 | trivy image scan | HIGH or CRITICAL (fixable) fails |"
+            echo "| 7 | grype image scan | HIGH or CRITICAL (fixable) fails |"
             echo ""
             echo "Coverage is reported, not gated:"
             echo ""

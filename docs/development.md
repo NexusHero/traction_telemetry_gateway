@@ -233,11 +233,11 @@ invalid token shows up as a 403 on the first scan. Locally:
 
 ```sh
 conan audit provider auth conancenter --token=<your_token>
-conan audit scan . --context host --severity-level 9.0 -s build_type=Release
+conan audit scan . --context host --severity-level 7.0 -s build_type=Release
 ```
 
-`--severity-level 9.0` is the default (critical only) and matches the trivy gate
-on the image. `--context host` skips tool requires, which never reach the
+`--severity-level 7.0` means high or above (CVSS >= 7.0) and matches the trivy
+gate on the image. `--context host` skips tool requires, which never reach the
 runtime image.
 
 ### Licence policy (local)

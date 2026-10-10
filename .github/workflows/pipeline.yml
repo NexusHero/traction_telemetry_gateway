@@ -23,7 +23,10 @@ on:
 
 concurrency:
   group: pipeline-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel only in-flight PR runs: every commit on main must produce its own
+  # evidence bundle, so a newer push must not abort the run that records the
+  # evidence for the one before it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -31,7 +34,7 @@ permissions:
 jobs:
   ci:
     name: CI
-    uses: $/.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
@@ -40,7 +43,7 @@ jobs:
   # declares read-only permissions of its own.
   supply-chain:
     name: Supply chain
-    uses: $/.github/workflows/supply-chain.yml
+    uses: ./.github/workflows/supply-chain.yml
     permissions:
       contents: read
       packages: write

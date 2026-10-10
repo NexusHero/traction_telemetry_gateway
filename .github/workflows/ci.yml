@@ -29,6 +29,7 @@ jobs:
   format:
     name: Format (clang-format)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,6 +65,7 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +76,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -130,13 +132,14 @@ jobs:
   cross-aarch64:
     name: Cross build & test (aarch64, qemu)
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       - name: Install cross toolchain and qemu
         run: |
@@ -203,6 +206,7 @@ jobs:
   sanitize:
     name: ${{ matrix.label }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -229,7 +233,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -275,13 +279,14 @@ jobs:
   coverage:
     name: Coverage (gcovr)
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -342,13 +347,14 @@ jobs:
   static-analysis:
     name: SAST (clang-tidy + cppcheck)
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       # Versioned packages, not the runner's default `clang-tidy`: a runner
       # image bump that moved the default to a newer major would change the
@@ -436,6 +442,7 @@ jobs:
   secrets-scan:
     name: Secrets scan (gitleaks)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -455,6 +462,7 @@ jobs:
   workflow-audit:
     name: Workflow audit (zizmor)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -73,7 +73,7 @@ via crafted frames cause the parser or server to:
 | Data races | ThreadSanitizer over `tests/test_concurrency.cpp` |
 | Static analysis | clang-tidy, cppcheck (regression gate vs. `.sast-baseline.txt`), GitHub CodeQL |
 | Test adequacy | coverage reported per run and per release — reported, never gated |
-| Supply chain (CVE) | committed `conan.lock` (enforced in every build), Renovate for Conan updates, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 9.0) |
+| Supply chain (CVE) | committed `conan.lock` (enforced in every build), Renovate for Conan updates, SBOM (CycloneDX from the Conan graph), `conan audit` gate (CVSS >= 7.0) |
 | Supply chain (licence) | `scripts/license_check.py`, permissive allowlist, default-deny |
 | Container | distroless `base-nossl` (glibc only, libstdc++ linked statically), built from the scanned lockfile, `trivy` + `grype` gates, image SBOM |
 | CVEs disclosed after release | nightly `cve-rescan.yml` of the main build and the latest release image; findings open a `security` issue |
@@ -121,12 +121,12 @@ Two deliberate properties of the gate:
 | 1 | clang-format | any deviation | `ci.yml` |
 | 2 | gitleaks | any finding, full history | `ci.yml` |
 | 3 | clang-tidy + cppcheck | beyond `.sast-baseline.txt` | `ci.yml` |
-| 4 | `conan audit` | CVSS >= 9.0 | `supply-chain.yml` |
+| 4 | `conan audit` | CVSS >= 7.0 | `supply-chain.yml` |
 | 4 | licence policy | not on the allowlist, or undeclared | `supply-chain.yml` |
 | 5 | ctest, ASan/UBSan, TSan | any failure | `ci.yml` |
 | 5 | coverage | *none — reported only* | `ci.yml` |
 | 6 | libFuzzer | any crash reproducer | `fuzzing.yml` |
-| 7 | trivy (image) | CRITICAL, fixed only | `supply-chain.yml` |
+| 7 | trivy (image) | HIGH or CRITICAL, fixed only | `supply-chain.yml` |
 
 Thresholds are set where they are defensible rather than where they look
 strictest. `--ignore-unfixed` on trivy is the clearest example: failing a build

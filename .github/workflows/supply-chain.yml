@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: $/.github/actions/setup-conan
+        uses: ./.github/actions/setup-conan
 
       # No Conan cache here. This job's lockfile and SBOM are what the image
       # is built from and what gets attested on tags, so a poisoned cache entry
@@ -89,13 +89,15 @@ jobs:
             exit 1
           fi
 
-      # Default severity threshold is CVSS >= 9.0, i.e. critical only, matching
-      # the trivy gate on the image below. --context host skips tool requires,
-      # which never reach the runtime image.
-      - name: Scan dependencies for CVEs (gate = critical)
+      # Severity threshold is CVSS >= 7.0, i.e. high or above, matching the
+      # trivy gate on the image below. High is where a fix is still expected
+      # (see the remediation SLA in SECURITY.md), so ignoring it would ship a
+      # vulnerability this project would patch in itself within 30 days.
+      # --context host skips tool requires, which never reach the runtime image.
+      - name: Scan dependencies for CVEs (gate = high)
         if: steps.auth.outputs.enabled == 'true'
         run: |
-          conan audit scan . --context host --severity-level 9.0 -s build_type=Release -f json --out-file build/conan-audit.json
+          conan audit scan . --context host --severity-level 7.0 -s build_type=Release -f json --out-file build/conan-audit.json
 
       # Collected into one directory so the uploaded artefact has a stable,
       # flat layout. upload-artifact strips the longest common prefix of its
@@ -188,20 +190,20 @@ jobs:
       # Versions and SHA-256 hashes live in the composite action, shared with
       # cve-rescan.yml so the gate and the nightly rescan use the same scanners.
       - name: Install trivy and grype
-        uses: $/.github/actions/install-scanners
+        uses: ./.github/actions/install-scanners
 
-      - name: Scan image (gate = critical)
-        run: trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
+      - name: Scan image (gate = high)
+        run: trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
 
       # A second scanner on the same image, with the same threshold. trivy and
       # grype catalogue packages independently and match against different
       # advisory feeds, so a CVE one of them misses (a missing distro feed
       # entry, a cataloguer gap) the other often catches. Two gates that
       # agree cost seconds; a single scanner's blind spot is invisible.
-      - name: Scan image with grype (gate = critical)
+      - name: Scan image with grype (gate = high)
         run: |
           mkdir -p evidence
-          grype ttg:ci --only-fixed --fail-on critical \
+          grype ttg:ci --only-fixed --fail-on high \
             -o table -o json=evidence/grype-image.json
 
       # Two SBOMs describe two different things and both matter. The Conan one
