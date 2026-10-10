@@ -11,7 +11,9 @@ info:
   version: 0.1.0
   description: |
     Ingests binary TTB frames and serves the latest value per channel as JSON.
-    No authentication and no TLS in process - see docs/threat-model.md.
+    Ingest requires a bearer token (the server refuses to start without one);
+    the read endpoints are open for monitoring. TLS terminates in front of the
+    process - see docs/threat-model.md and docs/cra/user-guidance.md.
 servers:
   - url: http://localhost:8080
 
@@ -20,6 +22,8 @@ paths:
     post:
       summary: Ingest one TTB frame
       description: Wire format is documented in include/ttg/frame.hpp.
+      security:
+        - ingestToken: []
       requestBody:
         required: true
         content:
@@ -34,6 +38,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Frame' }
+        '401':
+          description: Missing or wrong ingest token; the body never reaches the parser
+          headers:
+            WWW-Authenticate:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Unauthorized' }
         '400':
           description: Frame rejected by the parser
           content:
@@ -86,6 +98,12 @@ paths:
               schema: { $ref: '#/components/schemas/Probe' }
 
 components:
+  securitySchemes:
+    ingestToken:
+      type: http
+      scheme: bearer
+      description: Shared secret of the telemetry producer, at least 32 characters.
+
   schemas:
     ValueType:
       type: string
@@ -128,11 +146,12 @@ components:
 
     Stats:
       type: object
-      required: [frames_received, frames_rejected, channels_tracked]
+      required: [frames_received, frames_rejected, channels_tracked, auth_failures]
       properties:
         frames_received: { type: integer, format: int64 }
         frames_rejected: { type: integer, format: int64 }
         channels_tracked: { type: integer, format: int64 }
+        auth_failures: { type: integer, format: int64 }
 
     Probe:
       type: object
@@ -155,6 +174,12 @@ components:
             - too_many_channels
             - bad_channel_entry
             - bad_crc
+
+    Unauthorized:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, enum: [unauthorized] }
 
     HttpError:
       type: object

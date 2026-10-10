@@ -23,9 +23,9 @@ skip).
 
 | # | Threat | Violated property | Concrete vector | Mitigation |
 | --- | --- | --- | --- | --- |
-| S | Spoofing | Authenticity | A caller impersonates the telemetry bus and injects frames | Out of scope for v0; `mTLS`/HMAC on the ingest path is the future control |
+| S | Spoofing | Authenticity | A caller impersonates the telemetry bus and injects frames | Bearer token required on `POST /v1/frames`, checked before the parser in constant time; the server refuses to start without one (`docs/cra/user-guidance.md`). mTLS at the proxy as defence in depth |
 | T | Tampering | Integrity | Frame is modified in transit, or an actor crafts a malformed frame | CRC-16 per frame; signed firmware/artifacts in the release pipeline |
-| R | Repudiation | Non-repudiation | A rejection or ingest cannot be attributed | Structured counters in `/v1/stats`; audit logging is a follow-up |
+| R | Repudiation | Non-repudiation | A rejection or ingest cannot be attributed | Security event log (JSON lines: auth failures and rejected frames with peer address, rate-limited); counters in `/v1/stats` |
 | I | Information Disclosure | Confidentiality | Diagnostics leak via overly detailed error bodies; a browser on another origin embeds or caches responses | Errors return only a status token (`too_short`, `bad_crc`, ...), never data; `no-store`, deny-all CSP, CORP `same-origin`, `nosniff` on every response, checked by the ZAP scan |
 | D | Denial of Service | Availability | Flood of frames exhausts memory or CPU | Body length cap, max channel count, bounded store (`max_channels`), parser is O(n) with no allocation on attacker-controlled sizes |
 | E | Elevation of Privilege | Authorization | A diagnostic endpoint grants control over the store | Read-only vs. write endpoints are separated; no privileged endpoint exists yet |
@@ -47,8 +47,9 @@ stress test, and a libFuzzer harness in `tests/fuzz_frame_parser.cpp`.
 
 ## Assumptions and out of scope
 
-- No authentication/authorization (single trusted segment; documented as future
-  work under IEC 62443-4-2 FR 1/FR 2).
+- One shared ingest credential for all producers, no per-producer identity or
+  authorisation (IEC 62443-4-2 FR 2); read endpoints are open by design
+  (`docs/cra/risk-assessment.md`, R8).
 - No TLS termination in-process (expected to terminate at a proxy / service
   mesh).
 - The channel store is volatile; there is no confidentiality requirement for

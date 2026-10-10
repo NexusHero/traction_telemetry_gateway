@@ -1,0 +1,423 @@
+# Development guide
+
+Everything a contributor runs locally, and how the pipeline's building blocks
+work in detail. The [README](../README.md) is the overview; the CRA mapping is
+in [`docs/cra/`](cra/).
+
+## Build
+
+Dependencies are managed with **Conan 2** (ConanCenter).
+
+```sh
+conan profile detect --force
+conan install . --build=missing -of build -s build_type=Release
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+# the server refuses to start without an ingest token (secure by default)
+openssl rand -hex 32 > /tmp/ttg-token
+TTG_INGEST_TOKEN_FILE=/tmp/ttg-token ./build/ttg_server   # listens on 0.0.0.0:8080
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TTG_INGEST_TOKEN_FILE` | - | file holding the ingest bearer token (preferred: a mounted secret) |
+| `TTG_INGEST_TOKEN` | - | the token itself, if no file is used; at least 32 characters |
+| `TTG_ALLOW_UNAUTHENTICATED_INGEST` | unset | `1` runs without ingest authentication - logged, not for production |
+| `TTG_SECURITY_LOG` | `on` | `off` disables the security event log (JSON lines on stderr) |
+| `TTG_HOST` / `TTG_PORT` | `0.0.0.0` / `8080` | bind address |
+| `TTG_MAX_CHANNELS` | `4096` | upper bound of tracked channels |
+
+Environment variables: `TTG_HOST` (default `0.0.0.0`), `TTG_PORT` (default
+`8080`), `TTG_MAX_CHANNELS` (default `4096`).
+
+### Smoke test
+
+```sh
+python3 tools/gen_frame.py 1 > /tmp/frame.bin
+curl -H "Authorization: Bearer $(cat /tmp/ttg-token)" \
+     --data-binary @/tmp/frame.bin http://127.0.0.1:8080/v1/frames
+curl http://127.0.0.1:8080/v1/telemetry
+```
+
+### Local hooks
+
+Stage 1 of the pipeline. The cheapest feedback is the kind that never reaches a
+runner:
+
+```sh
+pip install pre-commit
+pre-commit install                        # format + lint on every commit
+pre-commit install --hook-type pre-push   # full-history secrets scan
+pre-commit run --all-files                # one-off sweep
+```
+
+Hooks and CI share their configuration — `.clang-format`, `.clang-tidy` — so
+they cannot disagree. CI still re-checks everything: `--no-verify` exists, and a
+contributor who never ran `pre-commit install` has no hooks at all.
+
+The `clang-tidy` hook needs a compilation database and skips itself with a hint
+if there is none. To enable it, configure a build tree with
+`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`.
+
+### Sanitizers
+
+ASan and TSan ship incompatible runtimes and cannot coexist in one binary, so
+`TTG_SANITIZER` is single-valued rather than a set of switches — the invalid
+combination is unrepresentable instead of a link error.
+
+```sh
+# address = AddressSanitizer + UBSan. The parser's main risk is memory safety.
+cmake -S . -B build-asan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+  -DTTG_SANITIZER=address
+cmake --build build-asan --parallel
+ctest --test-dir build-asan --output-on-failure
+```
+
+```sh
+# thread = ThreadSanitizer. TelemetryStore is shared across httplib's pool.
+cmake -S . -B build-tsan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+  -DTTG_SANITIZER=thread
+cmake --build build-tsan --parallel
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-tsan --output-on-failure
+```
+
+TSan only reports what a test actually exercises, and the rest of the suite is
+single-threaded — a TSan run over it would pass without touching a single lock.
+`tests/test_concurrency.cpp` exists for this: writers on disjoint channel
+ranges, readers racing them for the whole run, and assertions on the invariants
+that must survive *any* interleaving (no lost update, no torn snapshot, the
+channel cap holding under contention).
+
+### Coverage
+
+```sh
+pip install gcovr
+conan install . --build=missing -of build-cov -s build_type=Debug
+cmake -S . -B build-cov -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=build-cov/conan_toolchain.cmake \
+  -DTTG_ENABLE_COVERAGE=ON
+cmake --build build-cov --parallel
+ctest --test-dir build-cov --output-on-failure
+gcovr --root . --filter 'src/' --filter 'include/' --print-summary
+```
+
+Coverage is **reported, never gated**. A threshold turns a diagnostic into a
+target, and the cheapest way to hit a coverage target is to write tests that
+execute code without asserting anything about it. The `--filter` flags matter
+too: without them the header-only bulk of nlohmann_json and gtest dominates the
+line count and the number stops describing this project.
+
+Coverage and the sanitizers are mutually exclusive by design — CMake rejects the
+combination rather than emitting line counts distorted by a sanitizer runtime.
+
+### Fuzzing (Linux + Clang only)
+
+The parser has no third-party dependencies, so the fuzzer builds without Conan:
+
+```sh
+cmake -S . -B build-fuzz -G Ninja \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DTTG_BUILD_SERVER=OFF -DTTG_BUILD_TESTS=OFF -DTTG_ENABLE_FUZZING=ON
+cmake --build build-fuzz --target fuzz_frame_parser
+./build-fuzz/fuzz_frame_parser tests/corpus/ -max_total_time=300
+```
+
+### Benchmarks (runtime + memory)
+
+Google Benchmark with allocation tracking (global `operator new` counters):
+
+```sh
+conan install . --build=missing -of build -s build_type=Release -o build_benchmarks=True
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+  -DTTG_BUILD_BENCHMARKS=ON
+cmake --build build --target ttg_benchmarks
+./build/ttg_benchmarks --benchmark_min_time=0.05s
+```
+
+The `allocs` / `alloc_bytes` columns show how much the code under test
+allocates **per iteration**. The interesting findings for this project:
+
+- `parse_frame` allocates **exactly once** (the output channel vector) and
+  nothing on the reject path.
+- `TelemetryStore::ingest` is **allocation-free in steady state** (channels are
+  updated in place).
+- `crc16_ccitt` allocates nothing, as expected for a pure function.
+
+That is the concrete, measurable version of "keine Allokation im heißen Pfad".
+
+### SBOM (local)
+
+Conan has no SBOM command in core, so the pipeline uses `conan sbom:cyclonedx`
+from the official [conan-extensions](https://github.com/conan-io/conan-extensions)
+repo, pinned to a commit in `scripts/sbom.sh` (bump `EXTENSIONS_COMMIT` there
+and in `sbom.ps1` deliberately). The wrapper installs that revision on first
+run, or when the Conan home holds a different one; `cyclonedx-python-lib` comes
+from `ci/requirements.txt`:
+
+```sh
+./scripts/sbom.sh                 # -> build/sbom.cdx.json (CycloneDX 1.4)
+./scripts/sbom.sh --scan          # ... and run grype against it
+```
+
+```powershell
+.\scripts\sbom.ps1               # same thing on Windows
+```
+
+The SBOM lists only what ships: `build_tests=False` drops gtest and
+`--no-build-requires` drops cmake, leaving the two runtime dependencies with
+their resolved recipe revisions:
+
+```
+pkg:conan/cpp-httplib@0.56.0?repository_url=https://center2.conan.io&rrev=2f12074...
+pkg:conan/nlohmann_json@3.12.0?repository_url=https://center2.conan.io&rrev=2d634ab...
+```
+
+Two properties of this output are worth knowing.
+
+**The CVE gate does not read this file.** The extension emits package URLs but
+no CPEs, and file-based scanners match C/C++ packages on CPEs - `pkg:conan/...`
+alone produces zero findings even for a package with known CVEs (measured
+against `openssl/1.1.1a`: 0 matches by purl, 59 once a CPE is present). So this
+SBOM is the component *inventory*, and the gate in `supply-chain.yml` is
+`conan audit scan`, which resolves CVEs against the Conan references
+themselves. `./scripts/sbom.sh --scan` runs grype for convenience, but treat a
+clean result from it as weak evidence.
+
+**The purls are not cache-stable.** When a recipe is downloaded in the same run,
+the extension appends `repository_url=`; when it comes from a warm cache, it
+does not. The same commit can therefore produce two slightly different purls.
+This is upstream behaviour, left unmassaged rather than patched over here.
+
+### Dependency pinning and updates
+
+`conan.lock` is committed. Conan picks it up automatically, so every job, the
+container image and the release resolve the same recipe revisions, and the
+Dockerfile refuses to build without it. A dependency change is therefore always
+a reviewable diff in `conanfile.py` and `conan.lock`, never a silent re-resolve
+against whatever ConanCenter serves that day.
+
+To change a dependency, edit `conanfile.py` and regenerate the lockfile:
+
+```sh
+conan lock create . --lockfile-out=conan.lock
+```
+
+Updates come from two bots, split so no dependency is proposed twice:
+
+| What | Bot | Config |
+| --- | --- | --- |
+| Conan packages + `conan.lock` | [Renovate](https://docs.renovatebot.com/modules/manager/conan/) | `renovate.json` |
+| GitHub Actions (SHA pins), Docker base image | Dependabot | `.github/dependabot.yml` |
+
+Both wait 7 days before proposing a release. Renovate only runs once the
+[Renovate GitHub App](https://github.com/apps/renovate) is installed on the
+repository; until then `renovate.json` is inert.
+
+### CVE scanning (local)
+
+The CI gate uses `conan audit`, which is part of Conan core but needs a free
+token from [conan.io/audit/register](https://conan.io/audit/register) - stored as
+the repository secret `CONAN_AUDIT_TOKEN`. The token must be email-validated
+before it works; `conan audit provider auth` stores it without checking, so an
+invalid token shows up as a 403 on the first scan. Locally:
+
+```sh
+conan audit provider auth conancenter --token=<your_token>
+conan audit scan . --context host --severity-level 9.0 -s build_type=Release
+```
+
+`--severity-level 9.0` is the default (critical only) and matches the trivy gate
+on the image. `--context host` skips tool requires, which never reach the
+runtime image.
+
+### Licence policy (local)
+
+The other half of stage 4. A CVE is a bug you can patch; a copyleft obligation
+you shipped unknowingly is not fixable after the fact, so this is a gate rather
+than a report:
+
+```sh
+python scripts/license_check.py                       # resolve and check
+python scripts/license_check.py --graph graph.json    # check a saved graph
+```
+
+Default-deny against a permissive allowlist, and an **undeclared** licence counts
+as a violation — "the recipe did not say" is exactly the case worth catching
+early. The scope mirrors the SBOM (`build_tests=False`, host context only), so
+the policy covers what ships rather than what was needed to build it: a
+copyleft test framework never reaches a user, a copyleft runtime dependency
+does.
+
+Escape hatches are explicit and leave a trace in the diff:
+`--extra-allow MPL-2.0` extends the policy, `--waive some-pkg/1.2.3` exempts one
+package.
+
+### DAST (local)
+
+The running image is scanned with [ZAP](https://www.zaproxy.org/)'s API scan.
+A JSON API has no links to crawl, so ZAP learns the endpoints from
+`docs/openapi.yaml` - add new routes there in the same change that adds them to
+the server, or they are never scanned.
+
+```sh
+docker build -f docker/Dockerfile -t ttg:ci .
+docker network create dast
+TOKEN=$(openssl rand -hex 32)   # the gateway does not start without one
+docker run -d --rm --name ttg --network dast -e TTG_INGEST_TOKEN="$TOKEN" ttg:ci
+mkdir -p build/zap && cp docs/openapi.yaml .zap/rules.tsv build/zap/ && chmod -R a+rwX build/zap
+docker run --rm --network dast -v "$PWD/build/zap:/zap/wrk:rw" \
+  -e ZAP_AUTH_HEADER_VALUE="Bearer $TOKEN" ghcr.io/zaproxy/zaproxy:2.17.0 \
+  zap-api-scan.py -t /zap/wrk/openapi.yaml -f openapi -O http://ttg:8080 -c rules.tsv -r zap-report.html
+```
+
+Mount a directory under your home on Colima / Docker Desktop for macOS; `/tmp`
+is not shared with the VM. The gate fails on any WARN or FAIL that
+`.zap/rules.tsv` does not explicitly accept, which is the DAST counterpart of
+`.sast-baseline.txt`. The ZAP image is pinned because new ZAP releases add rules.
+
+ZAP does not meaningfully test `POST /v1/frames`: its active rules attack named
+parameters, and a binary body has none. The frame parser is covered by
+libFuzzer instead; ZAP covers the HTTP layer around it.
+
+### API contract fuzzing (local)
+
+[Schemathesis](https://schemathesis.readthedocs.io/) generates requests from
+`docs/openapi.yaml` and checks every response against it - no 5xx, only
+documented status codes and content types, schema-valid bodies, `405` for
+undeclared methods. Exceptions are in `schemathesis.toml`, each with a reason.
+With the container from the DAST section running:
+
+```sh
+docker run --rm --network dast -v "$PWD:/w:ro" -w /tmp schemathesis/schemathesis:4.30.0 \
+  --config-file /w/schemathesis.toml run /w/docs/openapi.yaml --url http://ttg:8080 \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+### Static analysis baseline
+
+`clang-tidy` and `cppcheck` run as a **gate on regressions**, not on absolute
+cleanliness. `scripts/sast_gate.py` compares the analysers' output against
+`.sast-baseline.txt`: findings recorded there are tolerated, anything new fails
+the build.
+
+```sh
+# what CI runs
+python scripts/sast_gate.py check clang-tidy.txt cppcheck.txt
+
+# accept the current findings (review the diff - this is a policy change)
+python scripts/sast_gate.py update clang-tidy.txt cppcheck.txt
+```
+
+The baseline is keyed on `(file, check)` with a count, deliberately **not** on
+line numbers: a line-keyed baseline invalidates itself on the next edit above a
+finding, which trains people to regenerate it blindly — and a blindly
+regenerated baseline accepts whatever happens to be in the tree, gate included.
+Counting instead means the baseline survives edits while a *second* instance of
+an already-known check still fails.
+
+The baseline currently starts empty, so the gate is strict. If CI surfaces
+pre-existing findings, record them once with `update` and shrink the file from
+there; lowering a count is always safe, raising one needs a reason in the pull
+request that does it.
+
+## HTTP API
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/v1/frames` | Ingest one binary frame. `202` on success, `400` with a status token otherwise. |
+| `GET` | `/v1/telemetry` | Latest value per channel as JSON. |
+| `GET` | `/v1/stats` | Counters (received, rejected, tracked channels). |
+| `GET` | `/healthz` | Liveness. |
+| `GET` | `/readyz` | Readiness. |
+
+The machine-readable contract is `docs/openapi.yaml`. Every response carries
+`Cache-Control: no-store`, a deny-all `Content-Security-Policy`,
+`Cross-Origin-Resource-Policy: same-origin`, `X-Content-Type-Options: nosniff`
+and `X-Frame-Options: DENY`, error responses included.
+
+A wrong method on a known path is `405` with an `Allow` header (RFC 9110
+15.5.6), including `TRACE` and `QUERY`; a method the server does not recognise
+at all is `501`; unknown paths are `404`.
+
+## Wire format
+
+Documented in `include/ttg/frame.hpp`. Big-endian, CRC-16/CCITT-FALSE:
+
+```
+magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) payload crc16(2)
+```
+
+
+## Hardening the pipeline itself
+
+The workflows hold the registry token and the signing identity, so they get the
+same treatment as source code:
+
+- **Every action is pinned by commit SHA**, with the release in a trailing
+  comment (`@3d3c42e… # v7.0.1`). A tag can be moved by whoever controls the
+  action's repository; a SHA cannot. Dependabot updates the pins.
+- **Downloaded tools are pinned by version and SHA-256** (trivy, grype), Python
+  tooling by hash (`ci/requirements.txt`, installed with `--require-hashes` in
+  CI and the image build), and container images by digest - ZAP, Schemathesis
+  and both Dockerfile base images.
+- **Least privilege per job.** Workflows default to `contents: read`; write
+  scopes sit on the single job that needs them.
+- **No persisted checkout credentials** (`persist-credentials: false`), no
+  `${{ }}` expansion inside `run:` scripts (values go through `env:`), and no
+  dependency cache on paths that produce signed artefacts.
+- **Dependabot cooldown of 7 days**, so a freshly hijacked release has time to
+  be noticed and yanked before it is proposed here.
+
+`ci.yml` → `workflow-audit` runs [zizmor](https://docs.zizmor.sh/) over all of
+this and fails on any finding. Locally:
+
+```sh
+pipx run zizmor==1.30.1 .
+```
+
+## Release and evidence
+
+Tagging `v*` runs `release.yml`, which re-runs the gates against the exact tree
+being shipped and publishes two assets plus checksums:
+
+- `ttg-<version>-linux-x86_64.tar.gz` — the binary
+- `ttg-<version>-evidence.tar.gz` — SBOM, `conan.lock`, CVE scan, licence
+  verdict, analyser output, the SAST gate's verdict, coverage, and a
+  `MANIFEST.md` explaining what each file records
+
+Both carry a SLSA provenance attestation; the binary additionally carries an
+SBOM attestation. The container image is signed and attested separately, **by
+digest** rather than by tag — a tag is mutable, so signing `latest` says nothing
+about which bytes a consumer will actually pull.
+
+```sh
+sha256sum -c SHA256SUMS
+gh attestation verify ttg-<version>-linux-x86_64.tar.gz -R <owner>/<repo>
+cosign verify ghcr.io/<owner>/<repo>@sha256:<digest> \
+  --certificate-identity-regexp '^https://github.com/<owner>/<repo>/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The point of the bundle: an Actions artefact expires after 90 days and is bound
+to a workflow run. A release asset with a provenance attestation is bound to a
+version, and stays verifiable after everyone who ran the pipeline has forgotten
+it existed.
+
+`release.yml` can also be dispatched manually, which exercises the whole
+evidence path and uploads the result as a workflow artefact without creating a
+Release or consuming a version number.
+
+A release is refused if the tag and the version in `conanfile.py` disagree: a
+release labelled `v0.2.0` whose SBOM says `0.1.0` is worse than no SBOM, because
+the evidence contradicts the artefact it describes.
+
