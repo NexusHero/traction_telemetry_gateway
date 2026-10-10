@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -55,6 +58,40 @@ bool is_unrecognised_method(const httplib::Request& req) {
     return req.version == "HTTP/1.1" || req.version == "HTTP/1.0";
 }
 
+// Compares in time that depends only on the length of the expected token, so
+// response timing does not reveal how many leading bytes of a guess were
+// right. A length mismatch is folded into the result instead of returning
+// early for the same reason.
+bool constant_time_equal(std::string_view presented, std::string_view expected) {
+    std::size_t diff = presented.size() ^ expected.size();
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const char got = i < presented.size() ? presented[i] : '\0';
+        diff |= static_cast<std::size_t>(static_cast<unsigned char>(got) ^
+                                         static_cast<unsigned char>(expected[i]));
+    }
+    return diff == 0;
+}
+
+// RFC 6750 bearer credential; the scheme name is case-insensitive (RFC 9110,
+// 11.1). Returns an empty string if the header is absent or not a bearer
+// token. By value: httplib returns the header value as a temporary, so a view
+// into it would dangle once this function returns.
+std::string bearer_token(const httplib::Request& req) {
+    std::string header = req.get_header_value("Authorization");
+    constexpr std::string_view kScheme = "bearer ";
+    if (header.size() <= kScheme.size()) {
+        return {};
+    }
+    for (std::size_t i = 0; i < kScheme.size(); ++i) {
+        const char c = header[i];
+        const char lower = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lower != kScheme[i]) {
+            return {};
+        }
+    }
+    return header.substr(kScheme.size());
+}
+
 bool method_allowed(std::string_view allow, std::string_view method) {
     while (!allow.empty()) {
         const auto comma = allow.find(',');
@@ -71,8 +108,8 @@ bool method_allowed(std::string_view allow, std::string_view method) {
 
 }  // namespace
 
-TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store)
-    : store_(store), server_(std::make_unique<httplib::Server>()) {
+TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store, HttpServerConfig config)
+    : store_(store), config_(std::move(config)), server_(std::make_unique<httplib::Server>()) {
     // Bound the request body before it reaches the parser. The parser would
     // also reject oversized frames, but refusing early is cheaper.
     server_->set_payload_max_length(kHeaderSize + kMaxPayloadLen + kCrcSize + 1);
@@ -123,11 +160,33 @@ TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store)
                          [](const httplib::Request&, httplib::Response& res) { res.status = 404; });
 
     server_->Post("/v1/frames", [this](const httplib::Request& req, httplib::Response& res) {
+        // Authentication before parsing: input from someone who is not an
+        // authorised producer never reaches the parser at all, which takes
+        // the trust boundary's main attack surface away from anonymous
+        // callers (CRA Annex I (2)(d), IEC 62443-4-2 FR 1).
+        if (!config_.ingest_token.empty() &&
+            !constant_time_equal(bearer_token(req), config_.ingest_token)) {
+            store_.record_auth_failure();
+            if (config_.security_log != nullptr) {
+                config_.security_log->record("auth_failure", req.remote_addr,
+                                             req.has_header("Authorization") ? "invalid_token"
+                                                                             : "missing_token");
+            }
+            res.status = 401;
+            res.set_header("WWW-Authenticate", R"(Bearer realm="ttg-ingest")");
+            res.set_content(nlohmann::json{{"error", "unauthorized"}}.dump(), "application/json");
+            return;
+        }
+
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(req.body.data());
         const ParseResult result =
             parse_frame(std::span<const std::uint8_t>(bytes, req.body.size()));
         if (!result.ok()) {
             store_.record_rejected();
+            if (config_.security_log != nullptr) {
+                config_.security_log->record("frame_rejected", req.remote_addr,
+                                             to_string(result.status));
+            }
             res.status = 400;
             res.set_content(error_body(result.status).dump(), "application/json");
             return;

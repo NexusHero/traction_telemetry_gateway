@@ -227,10 +227,21 @@ jobs:
       # What this does not cover: the binary frame body. ZAP's active rules
       # attack named parameters, and an octet-stream body has none, so
       # /v1/frames is fuzzed by libFuzzer (fuzzing.yml) instead.
+      # The gateway refuses to start without an ingest token, so the DAST
+      # container gets a random one per run, kept in a file under
+      # RUNNER_TEMP rather than in an output or GITHUB_ENV, and masked in
+      # the log. Both scanners then test as an authorised producer, and
+      # Schemathesis additionally checks that requests without it are
+      # refused (its ignored_auth check).
       - name: DAST - ZAP API scan (gate = any unaccepted warning)
         run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          printf '%s' "$token" > "$RUNNER_TEMP/dast-token"
+
           docker network create dast
-          docker run -d --name ttg --network dast -p 127.0.0.1:8080:8080 ttg:ci
+          docker run -d --name ttg --network dast -p 127.0.0.1:8080:8080 \
+            -e TTG_INGEST_TOKEN="$token" ttg:ci
 
           for _ in $(seq 1 30); do
             curl -sf http://127.0.0.1:8080/readyz >/dev/null && break
@@ -247,7 +258,10 @@ jobs:
           chmod -R a+rwX zap
 
           set +e
+          # ZAP_AUTH_HEADER_VALUE: the ZAP scan scripts add it as the
+          # Authorization header to every request they send.
           docker run --rm --network dast -v "$PWD/zap:/zap/wrk:rw" \
+            -e ZAP_AUTH_HEADER_VALUE="Bearer $token" \
             ghcr.io/zaproxy/zaproxy:2.17.0@sha256:7aaa659b0d43078febd82e29bad112285c370727e86ab8340444220e17d9f0d2 \
             zap-api-scan.py -t /zap/wrk/openapi.yaml -f openapi \
               -O http://ttg:8080 -c rules.tsv \
@@ -284,11 +298,13 @@ jobs:
         run: |
           mkdir -p evidence
           chmod a+rwx evidence
+          token=$(cat "$RUNNER_TEMP/dast-token")
           docker run --rm --network dast \
             -v "$PWD:/w:ro" -v "$PWD/evidence:/out" -w /tmp \
             schemathesis/schemathesis:4.30.0@sha256:bb9cecfc9ac4058a15fcf9b505d9d9f972e2dde7c74c4e9289a35922f4cbc0a5 \
             --config-file /w/schemathesis.toml \
             run /w/docs/openapi.yaml --url http://ttg:8080 \
+            --header "Authorization: Bearer $token" \
             --report junit --report-junit-path /out/schemathesis-junit.xml
 
           if [ "$(docker inspect -f '{{.State.Running}}' ttg)" != "true" ]; then

@@ -47,6 +47,7 @@ nlohmann::json to_json(const StoreStats& stats) {
         {"frames_received", stats.frames_received},
         {"frames_rejected", stats.frames_rejected},
         {"channels_tracked", stats.channels_tracked},
+        {"auth_failures", stats.auth_failures},
     };
 }
 

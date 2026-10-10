@@ -57,9 +57,8 @@ framework = "CRA"
 ref = "Annex I, Part I (1); Art. 13(2)-(3)"
 requirement = "Designed, developed and produced to ensure a level of cybersecurity appropriate to the risks, based on a documented cybersecurity risk assessment."
 also = ["IEC 62443-4-1 SR-2 (threat model)", "CLC/TS 50701 (risk assessment)"]
-checks = ["threat_model"]
-assessment = "partial"
-note = "A STRIDE threat model covers the trust boundaries. A risk assessment in the sense of Art. 13(2) additionally needs the intended purpose, the operating environment and an explicit risk acceptance by the manufacturer."
+checks = ["threat_model", "risk_assessment"]
+note = """STRIDE threat model over the trust boundaries, and a risk assessment (docs/cra/risk-assessment.md) with intended purpose, foreseeable misuse, operating environment, rated risks, treatment, Annex I applicability and the manufacturer's acceptance of residual risks."""
 
 [[control]]
 id = "CRA-I.2a"
@@ -76,9 +75,8 @@ framework = "CRA"
 ref = "Annex I, Part I (2)(b)"
 requirement = "Made available with a secure-by-default configuration, with the possibility to reset to the original state."
 also = ["IEC 62443-4-1 SG-3"]
-checks = ["minimal_runtime_image"]
-assessment = "partial"
-note = "Runs as non-root in a distroless image without a shell, package manager or TLS library; responses carry restrictive security headers by default. The server binds 0.0.0.0 by default, which suits a container but should be stated in user guidance; it holds no persistent state, so a restart is the reset."
+checks = ["minimal_runtime_image", "secure_defaults", "user_guidance"]
+note = """Secure by default: the gateway refuses to start without an ingest token, disabling authentication takes an explicit, logged opt-out, and it runs as non-root in a distroless image without shell, package manager or TLS library. It keeps no state, so a restart is the reset to the original state. Secure configuration is documented in docs/cra/user-guidance.md."""
 
 [[control]]
 id = "CRA-I.2c"
@@ -86,9 +84,8 @@ framework = "CRA"
 ref = "Annex I, Part I (2)(c)"
 requirement = "Vulnerabilities can be addressed through security updates."
 also = ["IEC 62443-4-1 SUM-1..5"]
-checks = ["dependency_updates_automated", "lockfile_enforced"]
-assessment = "partial"
-note = "Dependency updates arrive as reviewed pull requests (Renovate, Dependabot) against a committed lockfile, and every release is rebuilt from it. Automatic installation of updates on deployed units is the operator's update channel and outside this repository."
+checks = ["dependency_updates_automated", "lockfile_enforced", "user_guidance"]
+note = """Dependency updates arrive as reviewed pull requests against a committed lockfile and every release is rebuilt from it. Security fixes ship as free patch releases with advisories; the user guidance describes verification and digest-based automatic rollout on the operator side."""
 
 [[control]]
 id = "CRA-I.2d"
@@ -96,8 +93,8 @@ framework = "CRA"
 ref = "Annex I, Part I (2)(d)"
 requirement = "Protection from unauthorised access by appropriate control mechanisms (authentication, identity or access management)."
 also = ["IEC 62443-4-2 FR 1, FR 2"]
-assessment = "gap"
-note = "Not implemented. The ingest endpoint is unauthenticated by design of the current scope (docs/threat-model.md, threat S). Required before any deployment: mTLS or message authentication on POST /v1/frames."
+checks = ["ingest_authentication", "secure_defaults"]
+note = """Ingest requires a bearer token, checked in constant time before the body reaches the parser; failed attempts are counted at /v1/stats and written to the security event log. Read endpoints are open by design (risk assessment, R8)."""
 
 [[control]]
 id = "CRA-I.2e"
@@ -105,8 +102,8 @@ framework = "CRA"
 ref = "Annex I, Part I (2)(e)"
 requirement = "Protect the confidentiality of stored, transmitted or otherwise processed data, e.g. by encryption."
 also = ["IEC 62443-4-2 FR 4"]
-assessment = "partial"
-note = "No data at rest (volatile store). Transport encryption is delegated to a TLS-terminating proxy by design (threat model, assumptions); that dependency must be part of the user guidance."
+checks = ["risk_assessment", "user_guidance"]
+note = """No data at rest. Transport confidentiality is provided by the TLS-terminating proxy that the user guidance makes a deployment requirement; the ingest token is read from a secret file and never logged."""
 
 [[control]]
 id = "CRA-I.2f"
@@ -114,17 +111,16 @@ framework = "CRA"
 ref = "Annex I, Part I (2)(f)"
 requirement = "Protect the integrity of data, commands, programs and configuration against unauthorised manipulation."
 also = ["IEC 62443-4-1 SM-6", "IEC 62443-4-2 FR 3"]
-checks = ["artefact_signing", "actions_pinned"]
-assessment = "partial"
-note = "Programs: release artefacts carry SLSA build provenance and an SBOM attestation, images are cosign-signed by digest, and the pipeline itself is pinned by commit SHA. Data: frames carry a CRC-16, which detects corruption but not deliberate manipulation; that needs the authentication of CRA-I.2d."
+checks = ["artefact_signing", "actions_pinned", "ingest_authentication"]
+note = """Programs: signed release artefacts with SLSA provenance and SBOM attestation, a pipeline pinned by commit SHA. Data and commands: only an authenticated producer can write, and TLS at the proxy protects frames in transit (user guidance); the frame CRC detects corruption."""
 
 [[control]]
 id = "CRA-I.2g"
 framework = "CRA"
 ref = "Annex I, Part I (2)(g)"
 requirement = "Process only data that are adequate, relevant and limited to what is necessary (data minimisation)."
-assessment = "partial"
-note = "Only the latest value per telemetry channel is kept, in memory, bounded by max_channels. No personal data is processed by design; confirming that is part of the deployment's data-protection assessment."
+checks = ["risk_assessment"]
+note = """Only the latest value per telemetry channel is kept, in memory, bounded by max_channels; no personal data is processed (risk assessment, assets)."""
 
 [[control]]
 id = "CRA-I.2h"
@@ -140,8 +136,8 @@ id = "CRA-I.2i"
 framework = "CRA"
 ref = "Annex I, Part I (2)(i)"
 requirement = "Minimise the negative impact on the availability of services provided by other devices or networks."
-assessment = "partial"
-note = "The gateway only answers requests and initiates no outbound connections. Its behaviour under load in the target network is an integration test of the deployment, not of this repository."
+checks = ["risk_assessment"]
+note = """The gateway initiates no outbound connections and only answers requests, so it cannot be used to reach or load other systems; the risk assessment records this for Annex I (2)(i)."""
 
 [[control]]
 id = "CRA-I.2j"
@@ -166,8 +162,8 @@ id = "CRA-I.2l"
 framework = "CRA"
 ref = "Annex I, Part I (2)(l)"
 requirement = "Provide security-related information by recording and monitoring relevant internal activity."
-assessment = "partial"
-note = "Counters for received and rejected frames are exposed at /v1/stats. A security event log (rejections with source, attributable to a caller) is follow-up work (threat model, threat R)."
+checks = ["security_event_log"]
+note = """Security event log as JSON lines on stderr - failed authentication, rejected frames, security-relevant configuration - rate-limited so a flood cannot become a log flood, with TTG_SECURITY_LOG=off as the opt-out. Counters at /v1/stats."""
 
 [[control]]
 id = "CRA-I.2m"
@@ -196,9 +192,8 @@ framework = "CRA"
 ref = "Annex I, Part II (2)"
 requirement = "Address and remediate vulnerabilities without delay, including by providing security updates."
 also = ["IEC 62443-4-1 DM-1..6", "IEC 62443-4-1 SUM-2"]
-checks = ["cve_rescan_scheduled", "dependency_updates_automated"]
-assessment = "partial"
-note = "Detection is automated: the nightly rescan opens a tracking issue, and update pull requests arrive automatically. Remediation times are a process commitment of the manufacturer (target times per severity belong in SECURITY.md)."
+checks = ["cve_rescan_scheduled", "dependency_updates_automated", "remediation_targets", "vulnerability_process"]
+note = """Detection is automated (nightly rescan opens a tracking issue, update pull requests arrive automatically); remediation targets per severity are published in SECURITY.md, and security fixes ship as their own patch releases."""
 
 [[control]]
 id = "CRA-II.3"
@@ -215,8 +210,8 @@ framework = "CRA"
 ref = "Annex I, Part II (4)"
 requirement = "Once a security update is available, publicly disclose information about fixed vulnerabilities."
 also = ["IEC 62443-4-1 DM-5"]
-assessment = "organisational"
-note = "Channel: GitHub Security Advisories of this repository. Evidence is the published advisory per fixed vulnerability, not a pipeline output."
+checks = ["vulnerability_process"]
+note = """Fixed vulnerabilities are published as GitHub Security Advisories with CVE ID, affected and fixed versions and mitigations (docs/cra/vulnerability-handling.md, step 4). Per case, the published advisory is the record."""
 
 [[control]]
 id = "CRA-II.5"
@@ -251,8 +246,8 @@ framework = "CRA"
 ref = "Annex I, Part II (8)"
 requirement = "Disseminate security updates without delay and free of charge, with advisory messages."
 also = ["IEC 62443-4-1 SUM-5"]
-assessment = "organisational"
-note = "Releases are public and free of charge. Timeliness and advisory messages are a process commitment, evidenced by the release history and advisories."
+checks = ["vulnerability_process", "support_period_declared"]
+note = """Security updates are free patch releases, announced with an advisory, within the remediation targets and the declared support period. Per case, the release and the advisory are the record."""
 
 # ---------------------------------------------------------------------------
 # CRA obligations of the manufacturer outside Annex I
@@ -264,15 +259,15 @@ framework = "CRA"
 ref = "Art. 13(8)"
 requirement = "Determine and state a support period during which vulnerabilities are handled - at least five years unless the product is expected to be in use for less."
 checks = ["support_period_declared"]
-note = "SECURITY.md must state the support period with an end date. Rail vehicles run for decades; the period should reflect that."
+note = """SECURITY.md states the support period with an end date: 5 years per release, the product at least until 2031-12-31."""
 
 [[control]]
 id = "CRA-14"
 framework = "CRA"
 ref = "Art. 14(1)-(4)"
 requirement = "Report actively exploited vulnerabilities and severe incidents via the single reporting platform: early warning within 24 h, notification within 72 h, final report afterwards."
-assessment = "organisational"
-note = "In force since 11 September 2026. A pipeline can detect (nightly rescan, tracking issue) but reporting is a duty of the manufacturer: a named role, a runbook and records of submissions are the evidence."
+checks = ["vulnerability_process"]
+note = """Applies since 11 September 2026. Detection is automated; reporting is a duty of the manufacturer, set out in docs/cra/vulnerability-handling.md, step 5: roles, triggers, the 24 h / 72 h / final-report timeline via the ENISA Single Reporting Platform to the coordinating CSIRT (BSI), user information, and the records kept per submission."""
 
 # ---------------------------------------------------------------------------
 # BSI TR-03183-2 - SBOM content

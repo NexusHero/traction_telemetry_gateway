@@ -4,10 +4,35 @@ This repository is a **DevSecOps reference project**. It exists to demonstrate a
 secure-by-default C++ delivery pipeline, not to be deployed. Please report issues
 accordingly.
 
-## Supported versions
+## Supported versions and support period
 
-Only the `main` branch is maintained. There are no release branches and no
-long-term support window.
+**Support period:** every release receives security updates for 5 years from its release date, and the product as a whole at least until 2031-12-31.
+
+That is the commitment Art. 13(8) of the EU Cyber Resilience Act asks a
+manufacturer to state; five years is the regulation's floor. A deployment in
+rolling stock lives far longer than that, so a real product would align the
+period with the vehicle's service life and say so here.
+
+Security fixes are published as a new patch release of the latest version,
+free of charge, and announced in a GitHub Security Advisory. There are no
+long-lived release branches: within the support period, upgrading to the
+latest patch release is the supported way to receive a fix. How releases are
+verified and rolled out is in `docs/cra/user-guidance.md`.
+
+## Remediation targets
+
+Measured from confirmation of the report, by CVSS v3.1 base score:
+
+| Severity | Fix released within |
+| --- | --- |
+| Critical (9.0-10.0) or actively exploited | 7 days |
+| High (7.0-8.9) | 30 days |
+| Medium (4.0-6.9) | 90 days |
+| Low (0.1-3.9) | next regular release |
+
+An actively exploited vulnerability additionally triggers the reporting
+obligations of CRA Art. 14 (early warning within 24 hours). The full process,
+including who reports what to whom, is in `docs/cra/vulnerability-handling.md`.
 
 ## Reporting a vulnerability
 

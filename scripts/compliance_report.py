@@ -333,6 +333,71 @@ def _coverage_reported(ctx: Context):
     return PASS, f"{figure} (reported, not a target)", ["evidence/coverage.txt"]
 
 
+# ctest prints one line per test: "Test  #12: Suite.Name ....   Passed" or
+# "....***Failed". The release's Docker build log prefixes each line with a
+# step marker, which the pattern tolerates.
+CTEST_LINE = re.compile(r"Test\s+#\d+: (\S+) \.+\s*(Passed|\*+Failed|\*+Exception|\*+Timeout|\*+Not Run)")
+
+
+def _test_outcomes(ctx: Context) -> dict[str, bool] | None:
+    path = ctx.evidence_file("ctest.txt")
+    if path is None:
+        return None
+    outcomes: dict[str, bool] = {}
+    for name, verdict in CTEST_LINE.findall(path.read_text(encoding="utf-8", errors="replace")):
+        # Several runs (platforms, sanitizers) may list the same test; one
+        # failure anywhere is a failure.
+        outcomes[name] = outcomes.get(name, True) and verdict == "Passed"
+    return outcomes
+
+
+def _suite_result(outcomes: dict[str, bool], prefix: str, minimum: int) -> tuple[str, str]:
+    tests = {name: ok for name, ok in outcomes.items() if name.startswith(prefix)}
+    failed = sorted(name for name, ok in tests.items() if not ok)
+    if failed:
+        return FAIL, f"failed: {', '.join(failed)}"
+    if len(tests) < minimum:
+        return FAIL, f"only {len(tests)} {prefix}* test(s) ran, expected at least {minimum}"
+    return PASS, f"{len(tests)} {prefix}* tests passed"
+
+
+@check("ingest_authentication", EXECUTION)
+def _ingest_authentication(ctx: Context):
+    outcomes = _test_outcomes(ctx)
+    if outcomes is None:
+        return MISSING, "no ctest.txt in this run's evidence"
+    result, detail = _suite_result(outcomes, "AuthHttpServerTest.", 5)
+    spec = ctx.repo_text("docs/openapi.yaml") or ""
+    if result == PASS and not ("scheme: bearer" in spec and "ingestToken" in spec):
+        return FAIL, "docs/openapi.yaml declares no bearer security for ingest", ["evidence/ctest.txt"]
+    if result == PASS:
+        detail = (
+            f"bearer token required on POST /v1/frames, checked before the parser; {detail} "
+            "(missing, wrong and prefix tokens refused, auth failures counted)"
+        )
+    return result, detail, ["evidence/ctest.txt", "docs/openapi.yaml"]
+
+
+@check("security_event_log", EXECUTION)
+def _security_event_log(ctx: Context):
+    outcomes = _test_outcomes(ctx)
+    if outcomes is None:
+        return MISSING, "no ctest.txt in this run's evidence"
+    result, detail = _suite_result(outcomes, "SecurityLog.", 4)
+    wired = outcomes.get("AuthHttpServerTest.SecurityEventsAreLogged")
+    if result == PASS and not wired:
+        return FAIL, "the server-side logging test did not pass", ["evidence/ctest.txt"]
+    opt_out = "TTG_SECURITY_LOG" in (ctx.repo_text("src/main.cpp") or "")
+    if result == PASS and not opt_out:
+        return FAIL, "no opt-out (TTG_SECURITY_LOG) in src/main.cpp", ["evidence/ctest.txt"]
+    if result == PASS:
+        detail = (
+            "JSON-lines security events (auth failures, rejected frames, configuration), "
+            f"rate-limited, opt-out TTG_SECURITY_LOG=off; {detail}"
+        )
+    return result, detail, ["evidence/ctest.txt", "src/main.cpp"]
+
+
 # ---------------------------------------------------------------------------
 # Configuration evidence - the pipeline is set up to enforce it
 # ---------------------------------------------------------------------------
@@ -524,6 +589,24 @@ def _release_requires_green_ci(ctx: Context):
     return FAIL, "the release does not depend on CI results", [".github/workflows/release.yml"]
 
 
+@check("secure_defaults", CONFIGURATION)
+def _secure_defaults(ctx: Context):
+    text, err = _needs(ctx, "src/main.cpp")
+    if err:
+        return err
+    required = {
+        "refuses to start without an ingest token": "no ingest token configured" in text,
+        "explicit, logged opt-out only": "TTG_ALLOW_UNAUTHENTICATED_INGEST" in text
+        and "ingest_authentication_disabled" in text,
+        "minimum token length": "kMinTokenLength" in text,
+        "token from a secret file": "TTG_INGEST_TOKEN_FILE" in text,
+    }
+    missing = [k for k, ok in required.items() if not ok]
+    if missing:
+        return FAIL, f"src/main.cpp lacks: {', '.join(missing)}", ["src/main.cpp"]
+    return PASS, "; ".join(required), ["src/main.cpp"]
+
+
 # ---------------------------------------------------------------------------
 # Document evidence
 # ---------------------------------------------------------------------------
@@ -563,6 +646,74 @@ def _support_period(ctx: Context):
     if match:
         return PASS, f"support period declared, ending {match.group(1)}", ["SECURITY.md"]
     return FAIL, "SECURITY.md states no support period with an end date", ["SECURITY.md"]
+
+
+def _document_sections(ctx: Context, rel: str, needles: dict[str, str]):
+    text, err = _needs(ctx, rel)
+    if err:
+        return err
+    missing = [label for label, needle in needles.items() if needle.lower() not in text.lower()]
+    if missing:
+        return FAIL, f"{rel} lacks: {', '.join(missing)}", [rel]
+    return PASS, f"{rel}: {', '.join(needles)}", [rel]
+
+
+@check("risk_assessment", DOCUMENT)
+def _risk_assessment(ctx: Context):
+    return _document_sections(
+        ctx,
+        "docs/cra/risk-assessment.md",
+        {
+            "intended purpose": "## Intended purpose",
+            "foreseeable misuse": "## Reasonably foreseeable use",
+            "operating environment": "## Operating environment",
+            "rated risks with treatment": "## Risks and treatment",
+            "Annex I applicability": "## Applicability of CRA Annex I",
+            "residual risk acceptance": "Accepted by:",
+        },
+    )
+
+
+@check("user_guidance", DOCUMENT)
+def _user_guidance(ctx: Context):
+    return _document_sections(
+        ctx,
+        "docs/cra/user-guidance.md",
+        {
+            "contact": "## Manufacturer and contact",
+            "secure deployment": "## Secure deployment",
+            "security updates": "## Security updates",
+            "support period": "## Support period",
+            "SBOM": "## Software bill of materials",
+            "decommissioning": "## Decommissioning",
+        },
+    )
+
+
+@check("vulnerability_process", DOCUMENT)
+def _vulnerability_process(ctx: Context):
+    return _document_sections(
+        ctx,
+        "docs/cra/vulnerability-handling.md",
+        {
+            "roles": "## Roles",
+            "remediation targets": "## 3. Remediation",
+            "public disclosure": "## 4. Disclosure",
+            "Art. 14 reporting": "## 5. Reporting obligations",
+            "24 h early warning": "24 hours",
+            "72 h notification": "72 hours",
+            "Single Reporting Platform": "Single Reporting Platform",
+        },
+    )
+
+
+@check("remediation_targets", DOCUMENT)
+def _remediation_targets(ctx: Context):
+    return _document_sections(
+        ctx,
+        "SECURITY.md",
+        {"remediation targets": "## Remediation targets", "critical within days": "| 7 days |"},
+    )
 
 
 # ---------------------------------------------------------------------------
