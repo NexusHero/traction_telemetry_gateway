@@ -388,11 +388,12 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
-| `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS, `-Werror`, **ELF hardening check**), **AArch64 cross build + tests under qemu**, ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, **60s fuzz smoke**, gitleaks, **zizmor workflow audit** |
-| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, **Schemathesis contract fuzzing**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `pipeline.yml` | push / PR / tag | **one run per commit**: calls `ci.yml` and `supply-chain.yml`, then a `report` job collects every artefact of the run into one evidence bundle (`pipeline-evidence`) and writes the **final pipeline report** - every gate's verdict, the key figures behind them, the compliance status, a hashed evidence inventory - to the run summary |
+| `ci.yml` | called by `pipeline.yml` / manual | clang-format gate, build & test (Ubuntu + macOS, `-Werror`, **ELF hardening check**), **AArch64 cross build + tests under qemu**, ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, **60s fuzz smoke**, gitleaks, **zizmor workflow audit** |
+| `supply-chain.yml` | called by `pipeline.yml` / manual | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, **Schemathesis contract fuzzing**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
 | `cve-rescan.yml` | nightly / manual | rebuilds main and pulls the latest release image, rescans both with trivy + grype against today's advisories; a finding fails the run and opens/updates a `security` issue |
 | `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
-| `release.yml` | tag `v*` / manual dry run | requires green CI on the commit; release binary **from the Dockerfile build stage** (same as the image), tests with that toolchain, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
+| `release.yml` | tag `v*` / manual dry run | requires a green `pipeline.yml` run on the commit; release binary **from the Dockerfile build stage** (same as the image), tests with that toolchain, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
 | `codeql.yml` | push / PR / weekly | CodeQL analysis (C++) |
 | `scorecard.yml` | push to main / weekly | OpenSSF Scorecard: published score (badge), findings uploaded to code scanning as SARIF |
@@ -472,8 +473,10 @@ the SBOM fields of BSI TR-03183-2. The mapping from requirement to check lives
 in [`compliance/controls.toml`](compliance/controls.toml), reviewed like any
 other gate configuration.
 
-- **Every change** (`supply-chain.yml`): the report is written to the run
-  summary, so a pull request that breaks a control shows it before merge.
+- **Every change** (`pipeline.yml`): evaluated against the evidence of the
+  whole run - tests on every platform, sanitizers, SAST, hardening, SBOM, CVE
+  and image scans, DAST - and summarised in the final pipeline report, so a
+  pull request that breaks a control shows it before merge.
 - **Every release** (`release.yml`): the report is part of the evidence bundle
   and covered by its provenance attestation; the summary goes into the release
   notes.

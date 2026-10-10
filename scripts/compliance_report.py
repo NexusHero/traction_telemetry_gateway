@@ -302,7 +302,8 @@ def _unit_tests(ctx: Context):
     if bad:
         return FAIL, f"{bad[0][1]} of {bad[0][2]} tests failed", ["evidence/ctest.txt"]
     total = sum(int(r[2]) for r in runs)
-    return PASS, f"{total} tests passed, built with the shipping toolchain", ["evidence/ctest.txt"]
+    where = f"across {len(runs)} test runs" if len(runs) > 1 else "in one test run"
+    return PASS, f"{total} test executions passed {where}", ["evidence/ctest.txt"]
 
 
 @check("binary_hardening", EXECUTION)

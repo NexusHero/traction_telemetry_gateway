@@ -89,10 +89,10 @@ jobs:
           fi
 
       # A tag is not a review. Anyone who can push one could otherwise ship a
-      # commit that never went through ci.yml - and this workflow re-runs the
-      # unit tests and SAST, but not the sanitizers, the coverage build or the
-      # format and workflow audits. So the full CI must already be green on
-      # exactly this commit. A dry run only warns, so the path stays usable
+      # commit that never went through the pipeline - and this workflow re-runs
+      # the unit tests and SAST, but not the sanitizers, the coverage build or
+      # the format and workflow audits. So the full pipeline (pipeline.yml:
+      # CI + supply chain) must already be green on exactly this commit. A dry run only warns, so the path stays usable
       # from a branch whose CI has not finished.
       - name: Require green CI on this commit
         env:
@@ -100,14 +100,14 @@ jobs:
           DRY_RUN: ${{ steps.version.outputs.dry_run }}
         run: |
           green=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/pipeline.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1" \
             --jq '.total_count')
-          echo "successful ci.yml runs for ${GITHUB_SHA}: ${green}"
+          echo "successful pipeline.yml runs for ${GITHUB_SHA}: ${green}"
           if [ "${green:-0}" -eq 0 ]; then
             if [ "$DRY_RUN" = "true" ]; then
-              echo "::warning::no green ci.yml run for ${GITHUB_SHA} - a real release would stop here"
+              echo "::warning::no green pipeline.yml run for ${GITHUB_SHA} - a real release would stop here"
             else
-              echo "::error::no green ci.yml run for ${GITHUB_SHA}. Tag a commit on main whose CI passed."
+              echo "::error::no green pipeline.yml run for ${GITHUB_SHA}. Tag a commit on main whose pipeline passed."
               exit 1
             fi
           fi
@@ -362,7 +362,7 @@ jobs:
             echo ""
             echo "| Stage | Gate | Threshold |"
             echo "| --- | --- | --- |"
-            echo "| 0 | ci.yml green on the tagged commit | required |"
+            echo "| 0 | pipeline.yml (CI + supply chain) green on the tagged commit | required |"
             echo "| 1 | clang-format | any deviation fails |"
             echo "| 2 | gitleaks (full history) | any finding fails |"
             echo "| 2 | zizmor workflow audit | any finding fails |"
