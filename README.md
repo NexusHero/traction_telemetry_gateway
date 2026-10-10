@@ -379,23 +379,28 @@ magic(2) version(1) msg_type(1) sequence(4) timestamp_ms(8) payload_len(2) paylo
 | 2 | Secrets scanning, pipeline audit | `ci.yml` → `secrets-scan` (gitleaks, full history), `workflow-audit` (zizmor) | any finding fails |
 | 3 | SAST | `ci.yml` → `static-analysis`, `codeql.yml` | finding beyond `.sast-baseline.txt` fails |
 | 4 | SCA / supply chain | `supply-chain.yml` → `sbom-and-scan` | CVSS ≥ 9.0 fails; licence allowlist, default-deny |
-| 5 | Build & test | `ci.yml` → `build-and-test`, `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; coverage reported only |
-| 6 | Dynamic / fuzzing / DAST | `fuzzing.yml` (nightly, cumulative corpus), `supply-chain.yml` → `container` (ZAP API scan, Schemathesis) | any crash reproducer fails; any ZAP warning beyond `.zap/rules.tsv` fails; any Schemathesis failure fails |
+| 5 | Build & test | `ci.yml` → `build-and-test`, `cross-aarch64` (qemu), `sanitize` (ASan/UBSan + TSan), `coverage` | test or sanitizer failure fails; `-Werror`; allocation bounds of the parser (`ttg_rt_tests`); missing ELF hardening fails; coverage reported only |
+| 6 | Dynamic / fuzzing / DAST | `ci.yml` → `fuzz-smoke` (60s per PR), `fuzzing.yml` (nightly, cumulative corpus), `supply-chain.yml` → `container` (ZAP API scan, Schemathesis) | any crash reproducer fails; any ZAP warning beyond `.zap/rules.tsv` fails; any Schemathesis failure fails |
 | 7 | Image scan, SBOM & signing | `supply-chain.yml` → `container`, `release.yml`, `cve-rescan.yml` (nightly) | trivy or grype CRITICAL with a fix fails; produces SBOMs, signatures, provenance |
-| 8 | Gate & release | all of the above + `release.yml` | every gate above; release carries the evidence |
+| 8 | Gate & release | all of the above + `release.yml` | green `ci.yml` on the tagged commit; binary from the same Dockerfile stage as the image; release carries the evidence |
 
 ### Workflows
 
 | Workflow | Runs | Purpose |
 | --- | --- | --- |
-| `ci.yml` | push / PR | clang-format gate, build & test (Ubuntu + macOS), ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, gitleaks, **zizmor workflow audit** |
-| `supply-chain.yml` | push / PR / tag | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, **Schemathesis contract fuzzing**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
+| `pipeline.yml` | push / PR / tag | **one run per commit**: calls `ci.yml` and `supply-chain.yml`, then a `report` job collects every artefact of the run into one evidence bundle (`pipeline-evidence`) and writes the **final pipeline report** - every gate's verdict, the key figures behind them, the compliance status, a hashed evidence inventory - to the run summary |
+| `ci.yml` | called by `pipeline.yml` / manual | clang-format gate, build & test (Ubuntu + macOS, `-Werror`, **ELF hardening check**), **AArch64 cross build + tests under qemu**, ASan/UBSan, **TSan**, **coverage**, clang-tidy + cppcheck **baseline gate**, **60s fuzz smoke**, gitleaks, **zizmor workflow audit** |
+| `supply-chain.yml` | called by `pipeline.yml` / manual | Conan lockfile, CycloneDX SBOM, `conan audit` CVE gate, **licence policy gate**, distroless image (no libssl) built **from the scanned lockfile**, trivy + **grype** scan, **ZAP API scan (DAST)**, **Schemathesis contract fuzzing**, image SBOM, cosign signature + SBOM attestation, SLSA provenance |
 | `cve-rescan.yml` | nightly / manual | rebuilds main and pulls the latest release image, rescans both with trivy + grype against today's advisories; a finding fails the run and opens/updates a `security` issue |
 | `fuzzing.yml` | nightly | libFuzzer on the parser; corpus **persists and is minimised** across runs; a reproducer fails the job |
-| `release.yml` | tag `v*` / manual dry run | release binary, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
+| `release.yml` | tag `v*` / manual dry run | requires a green `pipeline.yml` run on the commit; release binary **from the Dockerfile build stage** (same as the image), tests with that toolchain, **evidence bundle**, checksums, provenance + SBOM attestation, GitHub Release |
 | `benchmarks.yml` | weekly / manual | runtime + allocation benchmarks (Google Benchmark) |
 | `codeql.yml` | push / PR / weekly | CodeQL analysis (C++) |
 | `scorecard.yml` | push to main / weekly | OpenSSF Scorecard: published score (badge), findings uploaded to code scanning as SARIF |
+
+Real-time and target-platform concerns - what CI can and cannot say about
+latency, and what would need hardware - are in
+[`docs/realtime.md`](docs/realtime.md).
 
 ### Hardening the pipeline itself
 
@@ -459,6 +464,37 @@ Release or consuming a version number.
 A release is refused if the tag and the version in `conanfile.py` disagree: a
 release labelled `v0.2.0` whose SBOM says `0.1.0` is worse than no SBOM, because
 the evidence contradicts the artefact it describes.
+
+### Compliance report (CRA, BSI TR-03183-2)
+
+`scripts/compliance_report.py` turns a run's evidence into a report against
+the EU Cyber Resilience Act (Annex I Parts I and II, Art. 13(8), Art. 14) and
+the SBOM fields of BSI TR-03183-2. The mapping from requirement to check lives
+in [`compliance/controls.toml`](compliance/controls.toml), reviewed like any
+other gate configuration.
+
+- **Every change** (`pipeline.yml`): evaluated against the evidence of the
+  whole run - tests on every platform, sanitizers, SAST, hardening, SBOM, CVE
+  and image scans, DAST - and summarised in the final pipeline report, so a
+  pull request that breaks a control shows it before merge.
+- **Every release** (`release.yml`): the report is part of the evidence bundle
+  and covered by its provenance attestation; the summary goes into the release
+  notes.
+
+Each control's status is derived from its checks, never typed in, and every
+piece of evidence is labelled by kind - *execution* (this run produced it),
+*configuration* (a gate enforces it), *document* (a reviewed document states
+it) - and hashed in an inventory. Gaps are reported, not hidden: the report is
+designed to show an assessor what is shown and what is not.
+
+```sh
+# against a downloaded evidence bundle, or a local evidence/ directory
+python scripts/compliance_report.py --evidence evidence \
+  --out-md compliance-report.md --out-json compliance-report.json
+```
+
+It supports the technical documentation of a conformity assessment; it is not a
+certification or a declaration of conformity.
 
 See `SECURITY.md` for the vulnerability policy and the static-analysis baseline
 workflow, and `docs/threat-model.md` for the STRIDE model.

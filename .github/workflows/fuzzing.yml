@@ -20,23 +20,26 @@ permissions:
 jobs:
   fuzz:
     name: libFuzzer (protocol parser)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # A pinned major for the same reason as clang-tidy in ci.yml: libFuzzer's
+      # mutators and the sanitizers' checks change between releases, and a
+      # finding should come from the code, not from a runner image update.
       - name: Install Clang
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: sudo apt-get update && sudo apt-get install -y clang-18 libclang-rt-18-dev
 
       # The parser has no third-party dependencies, so no Conan is needed here.
       - name: Configure fuzzer
         run: >
           cmake -S . -B build-fuzz -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DCMAKE_C_COMPILER=clang
-          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_C_COMPILER=clang-18
+          -DCMAKE_CXX_COMPILER=clang++-18
           -DTTG_BUILD_SERVER=OFF
           -DTTG_BUILD_TESTS=OFF
           -DTTG_ENABLE_FUZZING=ON

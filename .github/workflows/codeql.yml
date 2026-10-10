@@ -17,7 +17,7 @@ env:
 jobs:
   analyze:
     name: CodeQL analysis (C++)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write   # upload results to code scanning
@@ -35,12 +35,8 @@ jobs:
         with:
           languages: ${{ matrix.language }}
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-
-      - name: Install Conan
-        run: pip install --require-hashes -r ci/requirements.txt
+      - name: Set up Conan
+        uses: $/.github/actions/setup-conan
 
       - name: Cache Conan packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -50,7 +46,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          conan profile detect --force
           conan install . --build=missing -of build -s build_type=Release
 
       - name: Build (CodeQL traced)

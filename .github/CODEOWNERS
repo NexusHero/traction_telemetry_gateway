@@ -1,0 +1,21 @@
+# Review ownership. With "Require review from Code Owners" enabled in the
+# branch ruleset for main, a change to any path below cannot merge without
+# the listed owner's approval.
+#
+# The pipeline is listed separately on purpose: the workflows hold the
+# signing identity and the registry token, and the gate scripts and
+# baselines decide what counts as a pass. A change that weakens a gate
+# should never ride along unnoticed in a feature PR. When the project gets
+# more maintainers, these lines are where a dedicated security/platform
+# team goes, instead of the catch-all owner.
+
+*                       @NexusHero
+
+/.github/               @NexusHero
+/scripts/               @NexusHero
+/docker/                @NexusHero
+/.sast-baseline.txt     @NexusHero
+/.zap/                  @NexusHero
+/conan.lock             @NexusHero
+/ci/                    @NexusHero
+/compliance/            @NexusHero

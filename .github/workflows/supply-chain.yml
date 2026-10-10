@@ -1,10 +1,13 @@
 name: Supply chain
 
+# Called by pipeline.yml, together with ci.yml, so dependency, image and DAST
+# evidence lands in the same workflow run as the build and test evidence.
+# workflow_dispatch stays for running the supply chain on its own.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
+  workflow_call:
+    secrets:
+      CONAN_AUDIT_TOKEN:
+        required: false
   workflow_dispatch:
 
 # Read-only by default; the write scopes are granted to the one job that
@@ -25,18 +28,14 @@ jobs:
   # ---------------------------------------------------------------------------
   sbom-and-scan:
     name: SBOM + dependency CVE & licence gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-
-      - name: Install Conan
-        run: pip install --require-hashes -r ci/requirements.txt
+      - name: Set up Conan
+        uses: $/.github/actions/setup-conan
 
       # No Conan cache here. This job's lockfile and SBOM are what the image
       # is built from and what gets attested on tags, so a poisoned cache entry
@@ -44,8 +43,7 @@ jobs:
       # extension is a small download, so a cold start costs seconds.
       - name: Resolve dependency graph (conan.lock)
         run: |
-          conan profile detect --force
-          conan install . --build=missing -of build -s build_type=Release --lockfile-out=build/conan.lock
+          conan install . --build=missing -of build -s build_type=Release --lockfile=conan.lock --lockfile-out=build/conan.lock
 
       # Generated from the Conan graph via the official conan-extensions
       # command - the same script developers run locally, so the SBOM in a
@@ -127,7 +125,7 @@ jobs:
   # ---------------------------------------------------------------------------
   container:
     name: Container build, scan & sign
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: sbom-and-scan
     permissions:
       contents: read
