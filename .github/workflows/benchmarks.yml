@@ -3,7 +3,7 @@ name: Benchmarks
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * 0'   # weekly
+    - cron: '0 4 * * 0'
 
 permissions:
   contents: read
@@ -31,9 +31,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # conan.lock pins the shipped graph (default options), which has no
-          # benchmark library. --lockfile-partial lets it resolve freshly while
-          # everything that ships stays pinned.
           conan install . --build=missing -of build -s build_type=Release -o build_benchmarks=True --lockfile-partial
 
       - name: Configure & build

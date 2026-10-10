@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-"""Bring the Conan CycloneDX SBOM up to BSI TR-03183-2.
-
-    scripts/sbom_enrich.py --sbom build/sbom.cdx.json [--build-type Release]
-
-Called by scripts/sbom.sh right after `conan sbom:cyclonedx`, so every SBOM
-this repository produces - locally, in the pipeline, in a release - is the
-enriched one.
-
-What the Conan extension emits, and what the German guideline for CRA SBOMs
-(TR-03183-2) additionally requires:
-
-    format          CycloneDX 1.4         -> 1.5 (>= 1.5 required)
-    SBOM creator    tool only             -> metadata.supplier with URL
-    component maker "Conan" placeholder   -> real maker + URL, from
-                                             compliance/sbom-suppliers.toml
-    component hash  none                  -> SHA-512 of the Conan package
-
-The hash covers the component as it was consumed: the package folder in the
-Conan cache, i.e. the exact files the build compiled against. A folder has no
-single canonical digest, so the value is the SHA-512 of a manifest - one line
-"<sha512 of file>  <relative path>" per file, sorted by path - and the method
-is recorded next to it as a property, so anyone can recompute it.
-
-Anything that cannot be filled (a component missing from the supplier map, a
-package missing from the cache) is left as it was and reported on stderr. The
-compliance report then shows the gap; this script never invents a value.
-"""
 
 from __future__ import annotations
 
@@ -49,11 +22,6 @@ def run_json(command: list[str]) -> object:
 
 
 def package_folders(build_type: str) -> dict[str, pathlib.Path]:
-    """Component name -> package folder in the Conan cache.
-
-    Resolved with the same options scripts/sbom.sh passes to the SBOM
-    extension, so the folders belong to the graph the SBOM describes.
-    """
     graph = run_json(
         [
             "conan", "graph", "info", str(REPO_ROOT), "--format=json",
@@ -83,8 +51,6 @@ def package_folders(build_type: str) -> dict[str, pathlib.Path]:
 def folder_sha512(folder: pathlib.Path) -> str:
     lines = []
     for path in sorted(p for p in folder.rglob("*") if p.is_file()):
-        # conaninfo.txt / conanmanifest.txt describe the package rather than
-        # being part of it; they also embed cache-specific data.
         if path.name in ("conaninfo.txt", "conanmanifest.txt"):
             continue
         digest = hashlib.sha512(path.read_bytes()).hexdigest()
@@ -113,7 +79,7 @@ def enrich(sbom: dict, suppliers: dict, folders: dict[str, pathlib.Path]) -> lis
         name = component.get("name", "")
         if name in known:
             component["supplier"] = entity(known[name])
-            component.pop("author", None)  # the "Conan" placeholder
+            component.pop("author", None)
         else:
             problems.append(f"{name}: no entry in compliance/sbom-suppliers.toml")
 
@@ -129,7 +95,7 @@ def enrich(sbom: dict, suppliers: dict, folders: dict[str, pathlib.Path]) -> lis
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description="Bring the Conan CycloneDX SBOM up to BSI TR-03183-2.")
     parser.add_argument("--sbom", type=pathlib.Path, required=True, help="rewritten in place")
     parser.add_argument("--build-type", default="Release")
     args = parser.parse_args(argv)

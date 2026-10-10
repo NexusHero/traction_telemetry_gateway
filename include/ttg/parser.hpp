@@ -26,11 +26,9 @@ struct ParseResult {
     [[nodiscard]] bool ok() const noexcept { return status == ParseStatus::Ok; }
 };
 
-// Deviation from the spec must never throw and never read out of bounds. The
-// function is total: every input produces a ParseResult.
 [[nodiscard]] ParseResult parse_frame(std::span<const std::uint8_t> data);
 
 [[nodiscard]] std::uint16_t crc16_ccitt(std::span<const std::uint8_t> data) noexcept;
 [[nodiscard]] const char* to_string(ParseStatus status) noexcept;
 
-}  // namespace ttg
+}

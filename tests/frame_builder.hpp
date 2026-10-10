@@ -71,4 +71,4 @@ inline std::vector<std::uint8_t> build_frame_raw(MsgType type, std::uint32_t seq
     return out;
 }
 
-}  // namespace ttg::test
+}

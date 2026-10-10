@@ -14,7 +14,7 @@ std::int64_t unix_millis() {
         .count();
 }
 
-}  // namespace
+}
 
 SecurityLog::SecurityLog(Sink sink, std::size_t max_events_per_second, Clock clock)
     : sink_(std::move(sink)), max_per_window_(max_events_per_second), clock_(std::move(clock)) {}
@@ -42,8 +42,6 @@ void SecurityLog::record(std::string_view event, std::string_view remote, std::s
     }
     ++in_window_;
 
-    // dump() escapes every string, so even a hostile peer address cannot
-    // break the one-object-per-line format.
     emit(nlohmann::json{{"ts_ms", unix_millis()},
                         {"event", std::string(event)},
                         {"remote", std::string(remote)},
@@ -53,4 +51,4 @@ void SecurityLog::record(std::string_view event, std::string_view remote, std::s
 
 void SecurityLog::emit(std::string_view line) { sink_(line); }
 
-}  // namespace ttg
+}

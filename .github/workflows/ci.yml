@@ -1,13 +1,5 @@
 name: CI
 
-# Called by pipeline.yml, which owns the triggers and the concurrency group:
-# CI and the supply chain run as one workflow run per commit, so every piece
-# of evidence they produce lands in the same run and one final job can turn it
-# into a report. workflow_dispatch stays for running CI on its own.
-#
-# Each job uploads what it observed as an `evidence-*` artefact. Logs that
-# only ever lived in a job's console are not evidence: they expire with the
-# run, and nothing downstream can read them.
 on:
   workflow_call:
   workflow_dispatch:
@@ -17,15 +9,9 @@ permissions:
 
 env:
   BUILD_TYPE: Release
-  # Conan reads this to find the local profile. Nothing else relies on it.
   CONAN_HOME: ${{ github.workspace }}/.conan2
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Stage 1. The same checks .pre-commit-config.yaml runs locally. Hooks are
-  # advisory - `--no-verify` exists, and a contributor who never ran
-  # `pre-commit install` has none - so the gate lives here as well.
-  # ---------------------------------------------------------------------------
   format:
     name: Format (clang-format)
     runs-on: ubuntu-24.04
@@ -35,10 +21,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned to the major version the pre-commit hook uses
-      # (mirrors-clang-format v19.x). clang-format's output changes between
-      # major releases, so an unpinned runner would reformat files the hook
-      # considers clean and the gate would contradict the hook.
       - name: Install clang-format
         run: |
           sudo apt-get update
@@ -49,8 +31,6 @@ jobs:
       - name: Check formatting
         run: |
           clang-format --version
-          # --Werror turns "would reformat" into a failure; --dry-run keeps the
-          # tree untouched so the diff below reflects what the tool wants.
           find src include tests benchmarks -type f \( -name '*.cpp' -o -name '*.hpp' \) \
             -print0 | xargs -0 clang-format --dry-run --Werror
 
@@ -103,7 +83,6 @@ jobs:
           mkdir -p evidence
           ctest --test-dir build --output-on-failure 2>&1 | tee evidence/ctest.txt
 
-      # The mitigations are Linux-only (see CMakeLists.txt), and so is ELF.
       - name: Verify exploit mitigations
         if: runner.os == 'Linux'
         run: |
@@ -118,17 +97,6 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Stage 5, the target half. The jobs above build for the runner (x86-64);
-  # the gateway runs on an embedded Linux box, which in this class of system
-  # means 64-bit ARM. Cross-compiling here catches what an x86-only CI never
-  # sees: architecture-specific warnings, a dependency without an ARM build,
-  # alignment and char-signedness assumptions (char is unsigned on AArch64).
-  #
-  # The tests then run under qemu user-mode emulation. That proves functional
-  # behaviour on the target ISA, not timing: qemu says nothing about latency
-  # or jitter, which need real hardware (see docs/realtime.md).
-  # ---------------------------------------------------------------------------
   cross-aarch64:
     name: Cross build & test (aarch64, qemu)
     runs-on: ubuntu-24.04
@@ -158,9 +126,6 @@ jobs:
           -pr:h ci/conan/linux-armv8-gcc13 -pr:b default
           --lockfile=conan.lock
 
-      # CMAKE_CROSSCOMPILING_EMULATOR is what lets ctest - and gtest's test
-      # discovery, which runs the binary at build time - execute AArch64
-      # binaries on this runner. -L points qemu at the target's sysroot.
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
@@ -183,8 +148,6 @@ jobs:
           mkdir -p evidence
           ctest --test-dir build --output-on-failure 2>&1 | tee evidence/ctest.txt
 
-      # readelf from binutils reads any ELF, so the same script checks the
-      # ARM binary: PAC/BTI aside, the mitigations are the same set.
       - name: Verify exploit mitigations
         run: |
           set -o pipefail
@@ -198,11 +161,6 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Stage 5. One sanitizer per job: ASan and TSan ship incompatible runtimes and
-  # cannot be linked into the same binary, which is why TTG_SANITIZER is
-  # single-valued rather than a set of booleans.
-  # ---------------------------------------------------------------------------
   sanitize:
     name: ${{ matrix.label }}
     runs-on: ubuntu-24.04
@@ -213,19 +171,10 @@ jobs:
         include:
           - sanitizer: address
             label: ASan / UBSan
-            # Without this, a UBSan diagnostic is printed and the process still
-            # exits 0 - CI would read that as a pass.
             options: 'UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1'
           - sanitizer: thread
             label: TSan
             options: 'TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1'
-            # httplib's client resolves names with glibc's getaddrinfo_a, which
-            # runs the lookup on a thread glibc creates internally. TSan never
-            # sees that thread start, so its first malloc segfaults inside the
-            # TSan allocator (every test in tests/test_http_server.cpp). The
-            # blocking resolver keeps lookups on the calling thread. Only this
-            # job changes: the server never resolves with a timeout, and the
-            # shipped binary keeps the recipe default.
             conan_options: '-o "cpp-httplib/*:use_non_blocking_getaddrinfo=False"'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -254,9 +203,6 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      # tests/test_concurrency.cpp is what gives TSan something to analyse: the
-      # rest of the suite is single-threaded, so a TSan run over it would pass
-      # without ever exercising a lock.
       - name: Run tests under ${{ matrix.label }}
         run: |
           set -o pipefail
@@ -271,11 +217,6 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Stage 5, the metric half. Coverage is reported, never gated: a threshold
-  # turns a diagnostic into a target, and the usual way to hit a coverage
-  # target is to write tests that execute code without asserting on it.
-  # ---------------------------------------------------------------------------
   coverage:
     name: Coverage (gcovr)
     runs-on: ubuntu-24.04
@@ -309,9 +250,6 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
-      # --filter restricts the report to our own code: without it, the headers
-      # of nlohmann_json and gtest dominate the line count and the number stops
-      # meaning anything about this project.
       - name: Report coverage
         run: |
           mkdir -p coverage
@@ -338,12 +276,6 @@ jobs:
           path: coverage/
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Stage 3. Both analysers run, then scripts/sast_gate.py decides: findings
-  # recorded in .sast-baseline.txt are tolerated, anything new fails the build.
-  # That is step 2 of the rollout in SECURITY.md - a gate that only blocks on
-  # regressions is one a team keeps switched on.
-  # ---------------------------------------------------------------------------
   static-analysis:
     name: SAST (clang-tidy + cppcheck)
     runs-on: ubuntu-24.04
@@ -356,11 +288,6 @@ jobs:
       - name: Set up Conan
         uses: $/.github/actions/setup-conan
 
-      # Versioned packages, not the runner's default `clang-tidy`: a runner
-      # image bump that moved the default to a newer major would change the
-      # findings under the gate, and .sast-baseline.txt would suddenly be
-      # wrong without a single source line having changed. Bump on purpose,
-      # together with the baseline.
       - name: Install analyzers
         run: |
           sudo apt-get update
@@ -381,27 +308,17 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # No -checks= flag: that would *replace* the Checks list in .clang-tidy,
-      # silently dropping the suppressions recorded there and making CI enforce
-      # a different rule set than the editor and the pre-commit hook.
       - name: clang-tidy
         run: |
           set +e
           clang-tidy-18 -p build src/*.cpp 2>&1 | tee clang-tidy.txt
           status=${PIPESTATUS[0]}
           echo "clang-tidy exit status: $status"
-          # 1 means "emitted diagnostics", which the gate below judges. Above
-          # that, clang-tidy itself failed (bad compilation database, crash) and
-          # its report cannot be trusted.
           if [ "$status" -gt 1 ]; then
             echo "::error::clang-tidy failed to run (exit $status)"
             exit "$status"
           fi
 
-      # --template pins the output to the shape scripts/sast_gate.py parses.
-      # cppcheck's default template is version-dependent; a runner upgrade that
-      # changed it would make every finding unparseable, and an unparseable
-      # report looks exactly like a clean one.
       - name: cppcheck
         run: |
           set +e
@@ -435,10 +352,6 @@ jobs:
             sast-gate.txt
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Stage 2. fetch-depth: 0 so the whole history is scanned, not just the tip -
-  # a key that was committed and then removed is still a leaked key.
-  # ---------------------------------------------------------------------------
   secrets-scan:
     name: Secrets scan (gitleaks)
     runs-on: ubuntu-24.04
@@ -452,13 +365,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ---------------------------------------------------------------------------
-  # Stage 2, the pipeline's own half. The workflows hold the signing identity
-  # and the registry token, so they are attack surface like any source file:
-  # template injection, persisted checkout credentials, unpinned actions,
-  # cache poisoning on publishing paths. zizmor audits them; any finding
-  # fails. The zizmor version is pinned for the same reason the ZAP image is.
-  # ---------------------------------------------------------------------------
   workflow-audit:
     name: Workflow audit (zizmor)
     runs-on: ubuntu-24.04
@@ -471,17 +377,8 @@ jobs:
       - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
         with:
           version: 1.30.1
-          # Report to the job log and fail; uploading SARIF would need
-          # security-events: write, which this workflow does not grant.
           advanced-security: false
 
-  # ---------------------------------------------------------------------------
-  # Stage 6, the pull-request half. The nightly run in fuzzing.yml goes deep;
-  # this goes wide and early: one minute against every PR, starting from the
-  # corpus the nightly runs have accumulated, so a change that makes the parser
-  # crash on a known-interesting input is caught before merge, not the next
-  # morning. Read-only on the corpus - only the nightly run on main writes it.
-  # ---------------------------------------------------------------------------
   fuzz-smoke:
     name: Fuzz smoke (libFuzzer, 60s)
     runs-on: ubuntu-24.04
@@ -513,9 +410,6 @@ jobs:
           restore-keys: |
             fuzz-corpus-
 
-      # Unlike the nightly job, the exit status is the verdict here: a 60s run
-      # with -max_total_time does not hit libFuzzer's own timeout path, so a
-      # non-zero exit is a crash, a leak or a slow input.
       - name: Fuzz for 60 seconds
         run: |
           set -o pipefail
@@ -525,9 +419,6 @@ jobs:
             -max_total_time=60 -print_final_stats=1 -artifact_prefix=artifacts/ \
             2>&1 | tee evidence/fuzz-smoke.txt
 
-      # Always, not only on failure: the run statistics are the evidence that
-      # the fuzzer ran at all, and a reproducer is the evidence when it found
-      # something.
       - name: Upload fuzzing evidence and crash reproducers
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

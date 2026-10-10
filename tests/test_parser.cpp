@@ -112,18 +112,14 @@ TEST(Parser, CorruptedCrcRejected) {
 }
 
 TEST(Parser, UnknownValueTypeRejected) {
-    // Craft a single channel entry with an invalid value_type. The CRC must be
-    // valid over the malformed entry, so build the raw payload first and let
-    // build_frame_raw compute the checksum over it.
     std::vector<std::uint8_t> payload(ttg::kChannelEntrySize, 0);
     payload[0] = 0x00;
-    payload[1] = 0x01;  // channel_id = 1
-    payload[2] = 0x7F;  // invalid value_type
+    payload[1] = 0x01;
+    payload[2] = 0x7F;
     const auto bytes = build_frame_raw(MsgType::Telemetry, 1, 0, payload);
     EXPECT_EQ(ttg::parse_frame(bytes).status, ParseStatus::BadChannelEntry);
 }
 
-// The parser is a trust boundary: no input, however malformed, may crash it.
 TEST(Parser, NeverThrowsOnArbitraryInput) {
     std::uint32_t state = 0x12345678U;
     for (int iter = 0; iter < 20000; ++iter) {
@@ -138,11 +134,6 @@ TEST(Parser, NeverThrowsOnArbitraryInput) {
     }
 }
 
-// Regression half of the fuzzing setup. The nightly fuzzer only finds a crash
-// once; this replays every file in tests/corpus - the seeds, plus each
-// reproducer committed there after a fix - on every build, under every
-// sanitizer job. The assertion is the parser's contract: it returns, and a
-// non-Ok result carries no channels.
 TEST(Parser, ReplaysCheckedInCorpus) {
     namespace fs = std::filesystem;
     const fs::path dir{TTG_CORPUS_DIR};
@@ -165,4 +156,4 @@ TEST(Parser, ReplaysCheckedInCorpus) {
     EXPECT_GT(replayed, 0U) << "empty corpus directory: " << dir;
 }
 
-}  // namespace
+}

@@ -23,8 +23,6 @@ ChannelValue make_int(std::uint16_t id, std::int32_t value) {
     return c;
 }
 
-// Builds a parsed frame with `channels` distinct channels. Built once, outside
-// the timed region.
 ttg::Frame make_frame(std::size_t channels) {
     std::vector<ChannelValue> values;
     values.reserve(channels);
@@ -35,9 +33,6 @@ ttg::Frame make_frame(std::size_t channels) {
     return ttg::parse_frame(bytes).frame;
 }
 
-// Ingest into a long-lived store: after the first iteration the channel slots
-// already exist, so this measures the steady-state update path and shows that
-// it allocates nothing.
 void BM_StoreIngest(benchmark::State& state) {
     const ttg::Frame frame = make_frame(static_cast<std::size_t>(state.range(0)));
     ttg::TelemetryStore store;
@@ -52,4 +47,4 @@ void BM_StoreIngest(benchmark::State& state) {
 }
 BENCHMARK(BM_StoreIngest)->Arg(1)->Arg(16)->Arg(128);
 
-}  // namespace
+}

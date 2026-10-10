@@ -13,7 +13,6 @@ namespace {
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 
-// A clock the test moves by hand, so the rate limit is tested without sleeping.
 struct FakeClock {
     steady_clock::time_point now{steady_clock::time_point{} + std::chrono::hours(1)};
 };
@@ -30,7 +29,7 @@ ttg::SecurityLog make_log(Capture& capture, FakeClock& clock, std::size_t per_se
 TEST(SecurityLog, DisabledByDefault) {
     ttg::SecurityLog log;
     EXPECT_FALSE(log.enabled());
-    log.record("auth_failure", "1.2.3.4", "missing_token");  // must not crash
+    log.record("auth_failure", "1.2.3.4", "missing_token");
 }
 
 TEST(SecurityLog, WritesOneJsonObjectPerEvent) {
@@ -66,7 +65,7 @@ TEST(SecurityLog, FloodIsCappedAndTheSuppressedCountReported) {
     for (int i = 0; i < 10; ++i) {
         log.record("frame_rejected", "10.0.0.7", "bad_crc");
     }
-    EXPECT_EQ(capture.lines.size(), 3U);  // the rest is counted, not written
+    EXPECT_EQ(capture.lines.size(), 3U);
 
     clock.now += milliseconds(1001);
     log.record("frame_rejected", "10.0.0.7", "bad_crc");
@@ -78,4 +77,4 @@ TEST(SecurityLog, FloodIsCappedAndTheSuppressedCountReported) {
     EXPECT_EQ(nlohmann::json::parse(capture.lines[4])["event"], "frame_rejected");
 }
 
-}  // namespace
+}

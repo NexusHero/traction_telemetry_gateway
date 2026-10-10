@@ -1,21 +1,3 @@
-// Real-time properties of the parser, enforced as tests.
-//
-// A real-time path may allocate only a bounded number of times, with a bounded
-// size, decided by configuration and never by the input: a heap allocation is
-// an unbounded-latency call into the allocator (locks, page faults, mmap), and
-// one whose size an attacker picks is a latency and a memory problem at once.
-//
-// The parser's current contract, checked here:
-//   - a frame rejected on its header costs no allocation at all;
-//   - any frame costs at most one allocation, of at most kMaxChannels entries.
-// The one allocation is Frame::channels. Taking it to zero means a
-// fixed-capacity container in Frame; when that happens, tighten kMaxAllocs to 0
-// and this file is the gate that keeps it there.
-//
-// This is its own executable because it replaces the global operator new: the
-// counting must see every allocation, and must not change how any other test
-// allocates.
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -30,8 +12,6 @@
 
 namespace {
 
-// Counted only while armed, and only on the arming thread: gtest and the
-// frame builder allocate freely around the call under test.
 thread_local bool t_armed = false;
 thread_local std::size_t t_allocs = 0;
 thread_local std::size_t t_bytes = 0;
@@ -41,23 +21,18 @@ void* counted_alloc(std::size_t size) {
         ++t_allocs;
         t_bytes += size;
     }
-    // malloc(0) may return nullptr legitimately; operator new must not.
     if (void* p = std::malloc(size == 0 ? 1 : size)) {
         return p;
     }
     throw std::bad_alloc();
 }
 
-}  // namespace
+}
 
-// Every non-aligned form is replaced, the nothrow ones included: ASan ships its
-// own definitions of all of them, and a mix (its nothrow new, this delete) is
-// an alloc-dealloc mismatch it reports. The aligned forms stay ASan's/libstdc++'s
-// as a matched set; the parser does not use over-aligned types.
 // NOLINTBEGIN(misc-new-delete-overloads,cert-dcl54-cpp)
 void* operator new(std::size_t size) { return counted_alloc(size); }
 void* operator new[](std::size_t size) { return counted_alloc(size); }
-void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
     try {
         return counted_alloc(size);
     } catch (...) {
@@ -69,10 +44,10 @@ void* operator new[](std::size_t size, const std::nothrow_t& tag) noexcept {
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t /*size*/) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t /*size*/) noexcept { std::free(p); }
-void operator delete(void* p, const std::nothrow_t& /*tag*/) noexcept { std::free(p); }
-void operator delete[](void* p, const std::nothrow_t& /*tag*/) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
 // NOLINTEND(misc-new-delete-overloads,cert-dcl54-cpp)
 
 namespace {
@@ -92,8 +67,6 @@ struct AllocStats {
     ParseStatus status;
 };
 
-// The result is destroyed outside the armed window on purpose: freeing is not
-// what is being measured, and the frame's lifetime belongs to the caller.
 AllocStats measure_parse(const std::vector<std::uint8_t>& bytes) {
     t_allocs = 0;
     t_bytes = 0;
@@ -114,12 +87,6 @@ std::vector<ChannelValue> channels(std::size_t count, ValueType type = ValueType
 }
 
 TEST(RealtimeParser, CounterSeesAllocations) {
-    // Guards the guard: if operator new were not replaced (a linker or
-    // sanitizer runtime winning the symbol), every test below would pass by
-    // counting nothing.
-    // An explicit ::operator new call, because a new-expression whose result
-    // is never used may be elided entirely (allowed since C++14, and Clang
-    // does it at -O2).
     t_allocs = 0;
     t_armed = true;
     void* p = ::operator new(sizeof(int));
@@ -139,7 +106,7 @@ TEST(RealtimeParser, HeaderRejectsDoNotAllocate) {
     std::vector<std::uint8_t> truncated = build_frame(MsgType::Telemetry, 1, 1, channels(4));
     truncated.pop_back();
     const std::vector<std::uint8_t> bad_crc =
-        build_frame(MsgType::Telemetry, 1, 1, channels(4), /*corrupt_crc=*/true);
+        build_frame(MsgType::Telemetry, 1, 1, channels(4), true);
 
     for (const auto& frame : {too_short, bad_magic, bad_version, bad_type, truncated, bad_crc}) {
         const AllocStats stats = measure_parse(frame);
@@ -160,12 +127,8 @@ TEST(RealtimeParser, AllocationIsBoundedIndependentOfInput) {
 }
 
 TEST(RealtimeParser, RejectAfterReserveStaysWithinBound) {
-    // A bad channel entry is detected after the channel vector is reserved, so
-    // this is the one reject path that allocates. It must still be within the
-    // same bound as a good frame.
     auto frame = build_frame(MsgType::Telemetry, 1, 1, channels(ttg::kMaxChannels));
-    frame[ttg::kHeaderSize + 2] = 0x7F;  // value_type of the first entry
-    // Recompute the CRC so the frame reaches the channel loop.
+    frame[ttg::kHeaderSize + 2] = 0x7F;
     frame.resize(frame.size() - ttg::kCrcSize);
     ttg::test::put_u16(frame, ttg::crc16_ccitt(frame));
 
@@ -175,4 +138,4 @@ TEST(RealtimeParser, RejectAfterReserveStaysWithinBound) {
     EXPECT_LE(stats.bytes, kMaxBytes);
 }
 
-}  // namespace
+}

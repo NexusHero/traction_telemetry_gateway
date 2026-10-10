@@ -10,13 +10,7 @@ AllocCounters& alloc_counters() {
     return counters;
 }
 
-}  // namespace ttg::bench
-
-// ---------------------------------------------------------------------------
-// Global operator new/delete overrides. They count every heap allocation in
-// the process while the benchmark runs. The overrides must live in this TU so
-// they are defined exactly once.
-// ---------------------------------------------------------------------------
+}
 
 namespace {
 void count(std::size_t size) {
@@ -25,7 +19,7 @@ void count(std::size_t size) {
     counters.total_allocated_bytes.fetch_add(static_cast<std::int64_t>(size),
                                              std::memory_order_relaxed);
 }
-}  // namespace
+}
 
 void* operator new(std::size_t size) {
     count(size);

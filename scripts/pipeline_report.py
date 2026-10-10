@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""Assemble a pipeline run's evidence and render its final report.
-
-    # 1. one flat evidence directory from the run's downloaded artefacts
-    scripts/pipeline_report.py assemble --artifacts artifacts --out evidence
-
-    # 2. (scripts/compliance_report.py --evidence evidence ...)
-
-    # 3. the final report: gates, key figures, compliance, inventory
-    scripts/pipeline_report.py render --evidence evidence --jobs jobs.jsonl \\
-        --out-md evidence/pipeline-report.md --out-json evidence/pipeline-report.json
-
-Used by the `report` job in .github/workflows/pipeline.yml. Each job of the
-run uploads what it observed as an artefact; `assemble` maps those artefacts
-onto the flat layout scripts/compliance_report.py reads (the same layout as
-the release evidence bundle), and `render` turns the result into one report.
-
-The report records, it does not judge. Every verdict in it comes from a gate
-job (via the jobs API) or from the evidence the gates produced. A figure that
-could not be read says so - "not produced in this run" - rather than
-defaulting to zero, because a zero is a claim.
-"""
 
 from __future__ import annotations
 
@@ -36,8 +15,6 @@ import xml.etree.ElementTree as ET
 
 NOT_PRODUCED = "not produced in this run"
 
-# Artefact name -> files copied verbatim into the evidence directory. Paths
-# are relative to the artefact's directory after download.
 VERBATIM = {
     "dependency-evidence": ["sbom.cdx.json", "conan-audit.json", "licenses.json", "conan.lock"],
     "image-evidence": [
@@ -51,9 +28,6 @@ VERBATIM = {
     "coverage-report": ["coverage.txt", "coverage.xml"],
 }
 
-# Artefacts whose ctest.txt / hardening.txt are concatenated into one file
-# each. Every test run counts: x86-64, macOS, AArch64 under qemu, and the
-# sanitizer builds are the same suite under different conditions.
 TEST_RUNS = "evidence-build-*", "evidence-cross-aarch64", "evidence-sanitize-*"
 
 
@@ -98,11 +72,6 @@ def assemble(artifacts: pathlib.Path, out: pathlib.Path) -> dict:
     (out / "assembly.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"pipeline-report: {len(present)} artefact(s) -> {len(copied)} evidence file(s) in {out}")
     return manifest
-
-
-# ---------------------------------------------------------------------------
-# Key figures. Each reader returns a short string, or NOT_PRODUCED.
-# ---------------------------------------------------------------------------
 
 
 def _read_json(path: pathlib.Path):
@@ -271,10 +240,6 @@ FIGURES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
 JOB_ICONS = {"success": "✅", "failure": "❌", "cancelled": "⏹️", "skipped": "⏭️", "timed_out": "⌛"}
 
 
@@ -440,7 +405,7 @@ def render(evidence: pathlib.Path, jobs_path: pathlib.Path, out_md: pathlib.Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description="Assemble a pipeline run's evidence and render its final report.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_assemble = sub.add_parser("assemble", help="map downloaded artefacts onto one evidence directory")

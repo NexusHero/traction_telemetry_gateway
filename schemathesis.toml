@@ -1,21 +1,8 @@
-# Schemathesis: property-based API tests generated from docs/openapi.yaml.
-# Run by supply-chain.yml against the built image, next to the ZAP scan.
-#
-# ZAP attacks named parameters with known payloads; Schemathesis generates
-# requests from the schema itself - valid and invalid - and checks every
-# response against the contract: no 5xx, documented status codes and content
-# types, bodies matching their schemas, 405 for undeclared methods.
-
 [checks]
-# Every check is on; exceptions are listed per operation below, with a reason.
 
 [generation]
 max-examples = 100
 
-# The schema can only say "binary, at most 1044 bytes" - it cannot express the
-# TTB frame format (magic, version, lengths, CRC). Nearly every schema-valid
-# body is therefore a malformed frame, and 400 is the correct answer. This
-# check would demand 2xx for them. The parser itself is covered by libFuzzer.
 [[operations]]
 include-path = "/v1/frames"
 include-method = "POST"

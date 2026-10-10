@@ -1,24 +1,12 @@
 name: Scorecard
 
-# OpenSSF Scorecard grades the repository's own supply-chain hygiene - pinned
-# dependencies, token permissions, branch protection, signed releases, fuzzing,
-# SAST, dangerous workflow patterns - against the same checks it runs on
-# thousands of open-source projects. It is a report, not a gate: the score is
-# published (badge in the README) and the findings land in GitHub code scanning
-# as SARIF, next to CodeQL's.
-#
-# Publishing restricts what this workflow may contain: no workflow-level env
-# or defaults, no containers, and only the actions used below.
-
 on:
   push:
     branches: [main]
   schedule:
-    - cron: '17 5 * * 1'         # weekly
-  branch_protection_rule:        # the Branch-Protection check reads these
+    - cron: '17 5 * * 1'
+  branch_protection_rule:
   workflow_dispatch:
-  # Experimental upstream; runs without publishing so a change to this file
-  # is exercised before it reaches main.
   pull_request:
     paths:
       - .github/workflows/scorecard.yml
@@ -31,8 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      security-events: write     # upload SARIF to code scanning
-      id-token: write            # publish results (badge, scorecard.dev API)
+      security-events: write
+      id-token: write
       actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

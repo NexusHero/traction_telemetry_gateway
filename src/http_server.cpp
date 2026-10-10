@@ -25,11 +25,9 @@ nlohmann::json error_body(ParseStatus status) {
 
 struct Route {
     std::string_view path;
-    std::string_view allow;  // value of the Allow header, also the method whitelist
+    std::string_view allow;
 };
 
-// Keep in sync with the handlers registered below and with docs/openapi.yaml.
-// HEAD is listed because httplib answers it with the GET handler.
 constexpr std::array<Route, 5> kRoutes{{
     {"/v1/frames", "POST"},
     {"/v1/telemetry", "GET, HEAD"},
@@ -38,13 +36,8 @@ constexpr std::array<Route, 5> kRoutes{{
     {"/readyz", "GET, HEAD"},
 }};
 
-// A syntactically valid method token (RFC 9110, 9.1; restricted here to
-// upper-case letters, which every registered method uses) on an HTTP/1.x
-// request that httplib does not know. Anything else that ends up as a 400 is
-// a genuinely malformed request and stays a 400.
 bool is_unrecognised_method(const httplib::Request& req) {
     const std::string& m = req.method;
-    // httplib's own method set (Server::builtin_methods is private).
     constexpr std::array<std::string_view, 10> kKnown{
         "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH", "PRI"};
     if (m.empty() || std::find(kKnown.begin(), kKnown.end(), m) != kKnown.end()) {
@@ -58,10 +51,6 @@ bool is_unrecognised_method(const httplib::Request& req) {
     return req.version == "HTTP/1.1" || req.version == "HTTP/1.0";
 }
 
-// Compares in time that depends only on the length of the expected token, so
-// response timing does not reveal how many leading bytes of a guess were
-// right. A length mismatch is folded into the result instead of returning
-// early for the same reason.
 bool constant_time_equal(std::string_view presented, std::string_view expected) {
     std::size_t diff = presented.size() ^ expected.size();
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -72,10 +61,6 @@ bool constant_time_equal(std::string_view presented, std::string_view expected) 
     return diff == 0;
 }
 
-// RFC 6750 bearer credential; the scheme name is case-insensitive (RFC 9110,
-// 11.1). Returns an empty string if the header is absent or not a bearer
-// token. By value: httplib returns the header value as a temporary, so a view
-// into it would dangle once this function returns.
 std::string bearer_token(const httplib::Request& req) {
     std::string header = req.get_header_value("Authorization");
     constexpr std::string_view kScheme = "bearer ";
@@ -101,28 +86,17 @@ bool method_allowed(std::string_view allow, std::string_view method) {
         if (comma == std::string_view::npos) {
             break;
         }
-        allow.remove_prefix(comma + 2);  // ", "
+        allow.remove_prefix(comma + 2);
     }
     return false;
 }
 
-}  // namespace
+}
 
 TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store, HttpServerConfig config)
     : store_(store), config_(std::move(config)), server_(std::make_unique<httplib::Server>()) {
-    // Bound the request body before it reaches the parser. The parser would
-    // also reject oversized frames, but refusing early is cheaper.
     server_->set_payload_max_length(kHeaderSize + kMaxPayloadLen + kCrcSize + 1);
 
-    // The API-relevant subset of the OWASP REST Security Cheat Sheet headers,
-    // plus CORP, which stops a browser page on another origin from embedding
-    // responses (ZAP rule 90004).
-    // Every response is JSON for a machine client, so nothing should be
-    // cached, sniffed into another type, framed or allowed to load content.
-    // Default headers are copied into the response before the request line is
-    // even parsed, so 400s for malformed requests and 404s carry them too.
-    // HSTS is absent on purpose: TLS terminates in front of the process (see
-    // docs/threat-model.md), and HSTS over plain HTTP is ignored by clients.
     server_->set_default_headers({
         {"Cache-Control", "no-store"},
         {"Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"},
@@ -131,10 +105,6 @@ TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store, HttpServerConfig
         {"X-Frame-Options", "DENY"},
     });
 
-    // A wrong method on a known path is 405 with an Allow header (RFC 9110,
-    // 15.5.6). httplib would answer 404, claiming the resource does not exist,
-    // or 400 for methods it has no handler table for (TRACE, CONNECT). Runs
-    // before method dispatch, so it covers every method uniformly.
     server_->set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
         for (const Route& route : kRoutes) {
             if (req.path != route.path) {
@@ -152,18 +122,10 @@ TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store, HttpServerConfig
         return httplib::Server::HandlerResponse::Unhandled;
     });
 
-    // QUERY (the IETF httpbis safe-method-with-body) is a standard method, so
-    // the server recognises it - otherwise httplib refuses it while parsing
-    // and it would be a 501 below. No route supports it: known paths get 405
-    // from the pre-routing handler above, everything else the usual 404.
     server_->CustomRoute("QUERY", R"(.*)",
                          [](const httplib::Request&, httplib::Response& res) { res.status = 404; });
 
     server_->Post("/v1/frames", [this](const httplib::Request& req, httplib::Response& res) {
-        // Authentication before parsing: input from someone who is not an
-        // authorised producer never reaches the parser at all, which takes
-        // the trust boundary's main attack surface away from anonymous
-        // callers (CRA Annex I (2)(d), IEC 62443-4-2 FR 1).
         if (!config_.ingest_token.empty() &&
             !constant_time_equal(bearer_token(req), config_.ingest_token)) {
             store_.record_auth_failure();
@@ -213,10 +175,6 @@ TelemetryHttpServer::TelemetryHttpServer(TelemetryStore& store, HttpServerConfig
     });
 
     server_->set_error_handler([](const httplib::Request& req, httplib::Response& res) {
-        // httplib rejects a method it has no handler table for while parsing
-        // the request line, before any route runs, and reports 400. A
-        // well-formed request with a method this server does not recognise is
-        // 501 (RFC 9110, 15.6.2) - the client did nothing malformed.
         if (res.status == 400 && is_unrecognised_method(req)) {
             res.status = 501;
             res.set_content(nlohmann::json{{"error", "not_implemented"}}.dump(),
@@ -251,4 +209,4 @@ void TelemetryHttpServer::stop() {
     }
 }
 
-}  // namespace ttg
+}

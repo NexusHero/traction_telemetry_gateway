@@ -51,4 +51,4 @@ nlohmann::json to_json(const StoreStats& stats) {
     };
 }
 
-}  // namespace ttg
+}

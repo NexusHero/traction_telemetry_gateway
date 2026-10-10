@@ -7,9 +7,6 @@
 
 namespace ttg::bench {
 
-// Process-wide allocation counters, driven from the overridden global
-// operator new / delete in memory_manager.cpp. The counters are kept out of
-// the hot path: two relaxed atomic adds per allocation.
 struct AllocCounters {
     std::atomic<std::int64_t> num_allocs{0};
     std::atomic<std::int64_t> total_allocated_bytes{0};
@@ -22,7 +19,6 @@ struct AllocSnapshot {
     std::int64_t total_allocated_bytes{0};
 };
 
-// Snapshot the counters right before the timed loop.
 [[nodiscard]] inline AllocSnapshot alloc_snapshot() {
     auto& counters = alloc_counters();
     return AllocSnapshot{
@@ -31,9 +27,6 @@ struct AllocSnapshot {
     };
 }
 
-// Call once after the timed loop to report the allocations the loop caused,
-// averaged per iteration. The result shows up in the console "counters" column
-// and in the JSON output.
 inline void report_allocations(benchmark::State& state, AllocSnapshot before) {
     const AllocSnapshot after = alloc_snapshot();
     state.counters["allocs"] =
@@ -44,4 +37,4 @@ inline void report_allocations(benchmark::State& state, AllocSnapshot before) {
         benchmark::Counter::kAvgIterations);
 }
 
-}  // namespace ttg::bench
+}

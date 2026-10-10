@@ -1,8 +1,5 @@
 name: Supply chain
 
-# Called by pipeline.yml, together with ci.yml, so dependency, image and DAST
-# evidence lands in the same workflow run as the build and test evidence.
-# workflow_dispatch stays for running the supply chain on its own.
 on:
   workflow_call:
     secrets:
@@ -10,9 +7,6 @@ on:
         required: false
   workflow_dispatch:
 
-# Read-only by default; the write scopes are granted to the one job that
-# publishes and signs. sbom-and-scan runs third-party tooling (Conan recipes,
-# the sbom extension) and has no reason to hold a token that can push images.
 permissions:
   contents: read
 
@@ -20,12 +14,6 @@ env:
   CONAN_HOME: ${{ github.workspace }}/.conan2
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Stage 4 + 7. Resolves the graph once and produces every artefact that
-  # describes it: the lockfile, the SBOM, the CVE verdict and the licence
-  # verdict. The container job consumes the same lockfile, so the image is
-  # provably built from the graph that was scanned here.
-  # ---------------------------------------------------------------------------
   sbom-and-scan:
     name: SBOM + dependency CVE & licence gate
     runs-on: ubuntu-24.04
@@ -37,41 +25,16 @@ jobs:
       - name: Set up Conan
         uses: $/.github/actions/setup-conan
 
-      # No Conan cache here. This job's lockfile and SBOM are what the image
-      # is built from and what gets attested on tags, so a poisoned cache entry
-      # would end up signed. Both dependencies are header-only and the sbom
-      # extension is a small download, so a cold start costs seconds.
       - name: Resolve dependency graph (conan.lock)
         run: |
           conan install . --build=missing -of build -s build_type=Release --lockfile=conan.lock --lockfile-out=build/conan.lock
 
-      # Generated from the Conan graph via the official conan-extensions
-      # command - the same script developers run locally, so the SBOM in a
-      # release artefact and the one on a dev machine are produced identically.
       - name: Generate SBOM (CycloneDX)
         run: ./scripts/sbom.sh -o build/sbom.cdx.json
 
-      # Stage 4's other half. A CVE is a bug you can patch; a copyleft
-      # obligation you shipped unknowingly is not fixable after the fact, so the
-      # licence policy is a gate rather than a report. Default-deny, and an
-      # undeclared licence counts as a violation.
       - name: Licence policy gate
         run: python scripts/license_check.py --json-out build/licenses.json
 
-      # The CVE gate deliberately does NOT read the SBOM above: the extension
-      # emits package URLs but no CPEs, and CPE is what file-based scanners
-      # match C/C++ packages on, so scanning it would pass unconditionally.
-      # `conan audit` resolves CVEs against the Conan references themselves.
-      #
-      # The provider needs a (free) token from https://conan.io/audit/register,
-      # which must be email-validated before it works. `provider auth` stores a
-      # token without checking it, so an invalid one surfaces as a 403 in the
-      # scan step below rather than here.
-      #
-      # Secrets are unavailable to pull requests from forks, where the gate is
-      # skipped with a warning rather than failing on something the contributor
-      # cannot fix. Anywhere else a missing token is a hard error: a silently
-      # skipped gate is worse than no gate.
       - name: Authenticate CVE provider
         id: auth
         env:
@@ -89,20 +52,11 @@ jobs:
             exit 1
           fi
 
-      # Severity threshold is CVSS >= 7.0, i.e. high or above, matching the
-      # trivy gate on the image below. High is where a fix is still expected
-      # (see the remediation SLA in SECURITY.md), so ignoring it would ship a
-      # vulnerability this project would patch in itself within 30 days.
-      # --context host skips tool requires, which never reach the runtime image.
       - name: Scan dependencies for CVEs (gate = high)
         if: steps.auth.outputs.enabled == 'true'
         run: |
           conan audit scan . --context host --severity-level 7.0 -s build_type=Release -f json --out-file build/conan-audit.json
 
-      # Collected into one directory so the uploaded artefact has a stable,
-      # flat layout. upload-artifact strips the longest common prefix of its
-      # inputs, which means the paths inside the artefact would otherwise
-      # change depending on which optional files exist.
       - name: Collect evidence
         if: always()
         run: |
@@ -120,20 +74,15 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Stage 7 + 8. `needs:` is load-bearing in two ways: the image is built from
-  # the lockfile the job above scanned, and an image whose dependencies failed
-  # the CVE or licence gate is never built, let alone pushed.
-  # ---------------------------------------------------------------------------
   container:
     name: Container build, scan & sign
     runs-on: ubuntu-24.04
     needs: sbom-and-scan
     permissions:
       contents: read
-      packages: write          # publish image to GHCR
-      id-token: write          # keyless signing
-      attestations: write      # SLSA provenance via actions/attest-*
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,9 +94,6 @@ jobs:
           name: dependency-evidence
           path: evidence
 
-      # The Dockerfile reads conan.lock from the build context, so the image
-      # resolves exactly the revisions that were scanned rather than whatever
-      # ConanCenter serves at build time.
       - name: Stage the lockfile into the build context
         run: |
           if [ ! -f evidence/conan.lock ]; then
@@ -175,8 +121,6 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
 
-      # Build into a fixed local tag so the scan below always has a target,
-      # regardless of branch/tag (metadata tags differ between PR and push).
       - name: Build image (load)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -187,54 +131,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Versions and SHA-256 hashes live in the composite action, shared with
-      # cve-rescan.yml so the gate and the nightly rescan use the same scanners.
       - name: Install trivy and grype
         uses: $/.github/actions/install-scanners
 
       - name: Scan image (gate = high)
         run: trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
 
-      # A second scanner on the same image, with the same threshold. trivy and
-      # grype catalogue packages independently and match against different
-      # advisory feeds, so a CVE one of them misses (a missing distro feed
-      # entry, a cataloguer gap) the other often catches. Two gates that
-      # agree cost seconds; a single scanner's blind spot is invisible.
       - name: Scan image with grype (gate = high)
         run: |
           mkdir -p evidence
           grype ttg:ci --only-fixed --fail-on high \
             -o table -o json=evidence/grype-image.json
 
-      # Two SBOMs describe two different things and both matter. The Conan one
-      # (from the job above) lists the libraries this project chose; this one
-      # lists what is actually in the image, including the distroless base
-      # layer, which no dependency manifest mentions.
       - name: Generate image SBOM (CycloneDX)
         run: |
           mkdir -p evidence
           trivy image --format cyclonedx --output evidence/image-sbom.cdx.json ttg:ci
           echo "image SBOM components: $(python -c "import json;print(len(json.load(open('evidence/image-sbom.cdx.json')).get('components',[])))")"
 
-      # Stage 6, dynamic half. trivy judged what is *in* the image; this judges
-      # how the running image *behaves* on the wire. ZAP's API scan has nothing
-      # to crawl on a JSON API, so it learns the attack surface from
-      # docs/openapi.yaml - a route missing there is a route never scanned.
-      #
-      # The gate fails on any WARN or FAIL that .zap/rules.tsv does not accept.
-      # That is only stable because the ZAP image is pinned: new ZAP releases
-      # add rules, and a floating tag would turn an upstream release into a red
-      # pipeline on an unchanged tree. Bump the version deliberately.
-      #
-      # What this does not cover: the binary frame body. ZAP's active rules
-      # attack named parameters, and an octet-stream body has none, so
-      # /v1/frames is fuzzed by libFuzzer (fuzzing.yml) instead.
-      # The gateway refuses to start without an ingest token, so the DAST
-      # container gets a random one per run, kept in a file under
-      # RUNNER_TEMP rather than in an output or GITHUB_ENV, and masked in
-      # the log. Both scanners then test as an authorised producer, and
-      # Schemathesis additionally checks that requests without it are
-      # refused (its ignored_auth check).
       - name: DAST - ZAP API scan (gate = any unaccepted warning)
         run: |
           token=$(openssl rand -hex 32)
@@ -253,15 +167,11 @@ jobs:
             echo "::error::gateway did not become ready"; docker logs ttg; exit 1;
           }
 
-          # ZAP runs as an unprivileged user and writes its reports into the
-          # mounted directory, so it must be world-writable.
           mkdir -p zap
           cp docs/openapi.yaml .zap/rules.tsv zap/
           chmod -R a+rwX zap
 
           set +e
-          # ZAP_AUTH_HEADER_VALUE: the ZAP scan scripts add it as the
-          # Authorization header to every request they send.
           docker run --rm --network dast -v "$PWD/zap:/zap/wrk:rw" \
             -e ZAP_AUTH_HEADER_VALUE="Bearer $token" \
             ghcr.io/zaproxy/zaproxy:2.17.0@sha256:7aaa659b0d43078febd82e29bad112285c370727e86ab8340444220e17d9f0d2 \
@@ -274,28 +184,18 @@ jobs:
           mkdir -p evidence
           cp zap/zap-report.json zap/zap-report.html evidence/ 2>/dev/null || true
 
-          # A scan that crashed the target would otherwise read as "few
-          # findings". The process surviving the attack is part of the verdict.
           if [ "$(docker inspect -f '{{.State.Running}}' ttg)" != "true" ]; then
             echo "::error::the gateway died during the DAST scan"
             docker logs ttg
             exit 1
           fi
 
-          # zap-api-scan.py: 0 = clean, 1 = FAIL, 2 = WARN, 3 = scan error.
           case "$status" in
             0) echo "ZAP: no findings beyond .zap/rules.tsv" ;;
             1|2) echo "::error::ZAP reported findings - see zap-report.html in the image-evidence artefact"; exit 1 ;;
             *) echo "::error::ZAP failed to run (exit $status)"; exit 1 ;;
           esac
 
-      # Stage 6, contract half. Where ZAP replays known attack payloads,
-      # Schemathesis generates requests from docs/openapi.yaml - valid ones,
-      # boundary values, undeclared methods - and checks every response
-      # against the contract: no 5xx, only documented status codes and content
-      # types, bodies matching their schemas, 405 + Allow for wrong methods.
-      # Exceptions live in schemathesis.toml, each with a reason. Runs against
-      # the container the ZAP step started, and again checks it survived.
       - name: API contract fuzzing - Schemathesis (gate = any failure)
         run: |
           mkdir -p evidence
@@ -331,9 +231,6 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
-      # Signing and attestation only happen for tags: an unreleased commit has
-      # nothing to attest about, and signing every main build would fill the
-      # transparency log with artefacts nobody consumes.
       - name: Push, sign and attest (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         id: push
@@ -346,32 +243,18 @@ jobs:
             docker tag ttg:ci "$tag"
             docker push "$tag"
 
-            # Sign and attest by digest, not by tag. A tag is mutable: signing
-            # "latest" says nothing about which image a consumer will pull,
-            # while a digest signature is bound to exact bytes.
             digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$tag" | cut -d@ -f2)
             ref="${tag%%:*}@${digest}"
             echo "signing $ref"
 
             cosign sign --yes "$ref"
 
-            # The SBOM becomes an in-toto attestation on the image rather than a
-            # loose file in an Actions artefact that expires in 90 days. This is
-            # the difference between "we generated an SBOM" and "a consumer can
-            # verify the SBOM for the image they are about to run".
-            #
-            # The image SBOM is the one attested here because it describes the
-            # thing the digest identifies. The Conan dependency SBOM describes
-            # the source build instead, and travels with the release bundle
-            # (see release.yml) where its subject is the binary.
             cosign attest --yes --type cyclonedx \
               --predicate evidence/image-sbom.cdx.json "$ref"
           done
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
 
-      # SLSA build provenance: who built this image, from which commit, with
-      # which workflow. Verifiable with `gh attestation verify`.
       - name: Attest build provenance (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0

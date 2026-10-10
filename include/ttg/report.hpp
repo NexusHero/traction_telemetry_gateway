@@ -15,4 +15,4 @@ namespace ttg {
 [[nodiscard]] nlohmann::json to_json(const std::vector<ChannelSnapshot>& snapshot);
 [[nodiscard]] nlohmann::json to_json(const StoreStats& stats);
 
-}  // namespace ttg
+}

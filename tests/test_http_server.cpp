@@ -1,9 +1,3 @@
-// HTTP layer tests: the server in process, a real socket, a real client.
-//
-// The security headers are what the ZAP scan in supply-chain.yml checks from
-// the outside. Asserting them here as well means a regression fails ctest on
-// every platform in seconds, instead of only surfacing in the container job.
-
 #include "ttg/http_server.hpp"
 
 #include <cstdint>
@@ -28,8 +22,6 @@ protected:
     void SetUp() override {
         port_ = server_.bind("127.0.0.1", 0);
         ASSERT_GT(port_, 0);
-        // The socket is already listening after bind(), so a request sent
-        // before serve() gets going simply waits in the accept backlog.
         thread_ = std::thread([this] { server_.serve(); });
     }
 
@@ -83,8 +75,6 @@ TEST_F(HttpServerTest, AcceptedFrameCarriesSecurityHeaders) {
     expect_security_headers(res);
 }
 
-// The error paths matter most: they are what a scanner (or an attacker) sees
-// first, and they are produced by different code than the happy path.
 TEST_F(HttpServerTest, RejectedFrameCarriesSecurityHeaders) {
     const auto res = client().Post("/v1/frames", "not a frame", "application/octet-stream");
     ASSERT_TRUE(res);
@@ -109,8 +99,6 @@ TEST_F(HttpServerTest, OversizedBodyIsRefusedBeforeTheParser) {
     EXPECT_EQ(store_.stats().frames_rejected, 0U);
 }
 
-// Schemathesis (supply-chain.yml) checks this from the outside; asserting it
-// here keeps the contract visible next to the other HTTP behaviour.
 TEST_F(HttpServerTest, WrongMethodOnKnownPathIs405WithAllow) {
     auto cli = client();
 
@@ -127,7 +115,6 @@ TEST_F(HttpServerTest, WrongMethodOnKnownPathIs405WithAllow) {
     EXPECT_EQ(delete_stats->get_header_value("Allow"), "GET, HEAD");
 }
 
-// httplib has no handler table for TRACE and would answer 400.
 TEST_F(HttpServerTest, TraceOnKnownPathIs405) {
     httplib::Request req;
     req.method = "TRACE";
@@ -153,8 +140,6 @@ TEST_F(HttpServerTest, QueryMethodIsRecognisedButNotAllowed) {
     EXPECT_EQ(res->status, 404);
 }
 
-// A well-formed request with a method nobody registered is 501, not httplib's
-// 400: the client sent nothing malformed.
 TEST_F(HttpServerTest, UnrecognisedMethodIs501) {
     httplib::Request req;
     req.method = "FROBNICATE";
@@ -178,13 +163,6 @@ TEST_F(HttpServerTest, WrongMethodOnUnknownPathStays404) {
     EXPECT_EQ(res->status, 404);
 }
 
-// ---------------------------------------------------------------------------
-// Ingest authentication. A separate fixture: the server above runs without a
-// token, which is how every other HTTP test exercises the parser path.
-// ---------------------------------------------------------------------------
-// Built at run time and deliberately low-entropy: a literal that looks like a
-// credential is what secret scanners (gitleaks in CI) are there to stop, test
-// file or not.
 const std::string kToken(32, 't');
 
 class AuthHttpServerTest : public ::testing::Test {
@@ -219,9 +197,6 @@ protected:
         return {bytes.begin(), bytes.end()};
     }
 
-    // Written from the server's worker threads, read from the test thread:
-    // the socket round trip orders them in practice, but TSan cannot see
-    // that, so the buffer has its own lock.
     std::vector<std::string> logged() {
         const std::lock_guard<std::mutex> lock(lines_mutex_);
         return lines_;
@@ -250,7 +225,7 @@ TEST_F(AuthHttpServerTest, MissingTokenIs401AndNeverReachesTheParser) {
     const auto stats = store_.stats();
     EXPECT_EQ(stats.auth_failures, 1U);
     EXPECT_EQ(stats.frames_received, 0U);
-    EXPECT_EQ(stats.frames_rejected, 0U);  // the parser never saw it
+    EXPECT_EQ(stats.frames_rejected, 0U);
 }
 
 TEST_F(AuthHttpServerTest, WrongTokenIs401) {
@@ -272,7 +247,6 @@ TEST_F(AuthHttpServerTest, TokenThatIsOnlyAPrefixIs401) {
 }
 
 TEST_F(AuthHttpServerTest, CorrectTokenIsAccepted) {
-    // The scheme is case-insensitive (RFC 9110, 11.1); the token is not.
     for (const char* scheme : {"Bearer ", "bearer "}) {
         SCOPED_TRACE(scheme);
         const httplib::Headers headers{{"Authorization", std::string(scheme) + kToken}};
@@ -286,8 +260,6 @@ TEST_F(AuthHttpServerTest, CorrectTokenIsAccepted) {
 }
 
 TEST_F(AuthHttpServerTest, ReadEndpointsStayOpen) {
-    // Monitoring reads stay unauthenticated by design (see docs/cra/
-    // risk-assessment.md); only the write path changes state.
     const auto res = client().Get("/v1/stats");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
@@ -307,4 +279,4 @@ TEST_F(AuthHttpServerTest, SecurityEventsAreLogged) {
     EXPECT_NE(lines[1].find(R"("detail":"too_short")"), std::string::npos);
 }
 
-}  // namespace
+}

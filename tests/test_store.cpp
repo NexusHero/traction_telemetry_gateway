@@ -66,4 +66,4 @@ TEST(TelemetryStore, CountsReceivedAndRejected) {
     EXPECT_EQ(stats.frames_rejected, 2U);
 }
 
-}  // namespace
+}

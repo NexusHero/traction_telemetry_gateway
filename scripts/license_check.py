@@ -1,41 +1,4 @@
 #!/usr/bin/env python3
-"""Enforce a licence policy over the Conan dependency graph.
-
-Stage 4 of the pipeline (SCA) is usually discussed as CVE scanning, but the
-other half of "third-party components and their known vulnerabilities and
-licences" is the licence side, and it fails differently: a CVE is a bug you can
-patch, a copyleft obligation you shipped unknowingly is a legal problem you
-cannot patch retroactively.
-
-Policy
-------
-Default-deny. A dependency passes only if every licence in its SPDX expression
-is on the allowlist below. An unknown or missing licence is a *failure*, not a
-pass - "the recipe did not say" is exactly the case worth catching early.
-
-The allowlist is permissive-only, which is the right default for a service
-distributed as a container image. Copyleft is not inherently disallowed in
-general, it is disallowed *by this policy*, and the waiver flag exists for the
-case where someone has actually read the terms and decided.
-
-Usage
------
-    # resolve the graph and check it (what CI does)
-    scripts/license_check.py
-
-    # check a graph JSON produced earlier - no network, no Conan needed
-    scripts/license_check.py --graph build/graph.json
-
-    # accept one extra licence, or exempt one package, with a reason
-    scripts/license_check.py --extra-allow MPL-2.0
-    scripts/license_check.py --waive some-pkg/1.2.3
-
-Scope
------
-Mirrors the SBOM: ``-o build_tests=False`` and host-context only, so the policy
-covers what actually ships rather than what was needed to build it. A GPL test
-framework never reaches a user; a GPL runtime dependency does.
-"""
 
 from __future__ import annotations
 
@@ -48,8 +11,6 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Permissive licences, SPDX identifiers. Keep this list short and deliberate:
-# every entry is a decision, not a convenience.
 ALLOWED: set[str] = {
     "0BSD",
     "Apache-2.0",
@@ -65,26 +26,16 @@ ALLOWED: set[str] = {
     "libpng-2.0",
 }
 
-# Conan marks the consuming project itself with one of these. It is our own
-# code, governed by LICENSE in the repo root, and is not a third-party
-# component - checking it would just assert that we agree with ourselves.
 OWN_RECIPE_KINDS = {"Consumer", "Cli", "Virtual", "Editable"}
 
-# A licence string Conan could not determine. Treated as a violation.
 UNKNOWN = "<unknown>"
 
 
 class PolicyError(Exception):
-    """The graph could not be obtained or understood."""
+    pass
 
 
 def resolve_graph(build_type: str) -> dict:
-    """Ask Conan for the dependency graph as JSON.
-
-    Uses the same options as scripts/sbom.sh so the licence policy and the SBOM
-    describe the same set of components. If they diverged, the SBOM would list
-    something the policy never looked at.
-    """
     command = [
         "conan",
         "graph",
@@ -123,38 +74,22 @@ def load_graph(path: pathlib.Path) -> dict:
 
 
 def licence_text(raw: object) -> str:
-    """Normalise Conan's ``license`` field to a single SPDX expression string.
-
-    Recipes declare it as a string, or as a list/tuple when a package is
-    multi-licensed. An empty value becomes UNKNOWN rather than an empty string
-    so it cannot silently satisfy an "is it allowed" check.
-    """
     if raw is None:
         return UNKNOWN
     if isinstance(raw, (list, tuple)):
         parts = [str(item).strip() for item in raw if str(item).strip()]
         if not parts:
             return UNKNOWN
-        # A list means "all of these apply", which is SPDX AND.
         return " AND ".join(parts)
     text = str(raw).strip()
     return text or UNKNOWN
 
 
 def expression_allowed(expression: str, allowed: set[str]) -> bool:
-    """Evaluate a (simple) SPDX licence expression against the allowlist.
-
-    Handles the forms that actually occur in ConanCenter recipes: a bare
-    identifier, OR alternatives, AND combinations, and parenthesised groups of
-    those. OR passes if any branch passes; AND needs every branch. Anything
-    this cannot parse is reported as not allowed - failing closed is the whole
-    point of a policy gate.
-    """
     text = expression.strip()
     if not text or text == UNKNOWN:
         return False
 
-    # Strip one layer of fully-enclosing parentheses: "(MIT OR Apache-2.0)".
     while text.startswith("(") and text.endswith(")") and _balanced(text[1:-1]):
         text = text[1:-1].strip()
 
@@ -163,8 +98,6 @@ def expression_allowed(expression: str, allowed: set[str]) -> bool:
         if len(branches) > 1:
             return combine(expression_allowed(branch, allowed) for branch in branches)
 
-    # A leaf. Trailing "+" means "or any later version" (GPL-2.0+); the base
-    # identifier still decides, and "WITH <exception>" keeps the base licence.
     leaf = re.split(r"\s+WITH\s+", text, maxsplit=1)[0].strip().rstrip("+")
     return leaf in allowed
 
@@ -179,7 +112,6 @@ def _balanced(text: str) -> bool:
 
 
 def _split_top_level(text: str, operator: str) -> list[str]:
-    """Split on OPERATOR, ignoring occurrences inside parentheses."""
     parts: list[str] = []
     depth = 0
     current: list[str] = []
@@ -198,7 +130,6 @@ def _split_top_level(text: str, operator: str) -> list[str]:
 
 
 def collect_components(graph: dict) -> list[tuple[str, str]]:
-    """Extract (reference, licence expression) for every shipped dependency."""
     nodes = graph.get("graph", {}).get("nodes")
     if not isinstance(nodes, dict):
         raise PolicyError(
@@ -212,25 +143,19 @@ def collect_components(graph: dict) -> list[tuple[str, str]]:
             continue
         if node.get("recipe") in OWN_RECIPE_KINDS:
             continue
-        # Build-context nodes (cmake, ninja) are tooling: they run on the build
-        # machine and never ship, which is why the SBOM drops them too.
         if node.get("context") == "build":
             continue
-        # Test requirements are not distributed either.
         if node.get("test"):
             continue
 
         ref = str(node.get("ref") or node.get("name") or "<unnamed>")
-        # Drop the recipe revision: "zlib/1.3#abc123" -> "zlib/1.3". The policy
-        # is about the package, and the revision only adds noise to the report.
         components.append((ref.split("#", 1)[0], licence_text(node.get("license"))))
 
-    # Deduplicate: a package can appear more than once in the graph.
     return sorted(set(components))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Enforce a licence policy over the Conan dependency graph.")
     parser.add_argument(
         "--graph",
         type=pathlib.Path,
@@ -271,9 +196,6 @@ def main() -> int:
         return 2
 
     if not components:
-        # Zero dependencies would mean the graph never resolved. This project has
-        # two runtime requirements, so an empty result is a broken invocation -
-        # and a gate that passes on an empty input is not a gate.
         print(
             "license-check: the graph contains no shipped dependencies, which "
             "cannot be right - refusing to report success.",
@@ -299,9 +221,6 @@ def main() -> int:
         marker = " " if verdict == "ok" else ">"
         print(f"{marker} {ref:<{width}}  {licence:<24} {verdict}")
 
-    # Written before the verdict is acted on: a failing run is exactly the one
-    # whose report you want to keep, and the release evidence bundle should show
-    # what the policy saw rather than only recording successes.
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(

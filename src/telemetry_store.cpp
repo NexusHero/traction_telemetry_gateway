@@ -13,8 +13,6 @@ void TelemetryStore::ingest(const Frame& frame) {
         auto it = channels_.find(value.id);
         if (it == channels_.end()) {
             if (channels_.size() >= max_channels_) {
-                // Refuse to grow past the cap. The frame still counts as
-                // received; the channel is simply not tracked.
                 continue;
             }
             ChannelSnapshot snap;
@@ -64,4 +62,4 @@ StoreStats TelemetryStore::stats() const {
     return stats_;
 }
 
-}  // namespace ttg
+}

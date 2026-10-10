@@ -6,9 +6,6 @@
 namespace ttg {
 namespace {
 
-// Bounds are guaranteed by the caller before these are used, but they take a
-// span and an explicit offset so that a future refactor cannot silently read
-// past the end.
 std::uint16_t read_u16(std::span<const std::uint8_t> d, std::size_t off) noexcept {
     return static_cast<std::uint16_t>((static_cast<std::uint16_t>(d[off]) << 8U) |
                                       static_cast<std::uint16_t>(d[off + 1]));
@@ -38,11 +35,9 @@ bool is_known_msg_type(std::uint8_t raw) noexcept {
     return false;
 }
 
-}  // namespace
+}
 
 std::uint16_t crc16_ccitt(std::span<const std::uint8_t> data) noexcept {
-    // Work in 32 bits so every intermediate stays unsigned and sign-conversion
-    // free; the value is kept to 16 bits by masking each step.
     std::uint32_t crc = 0xFFFFU;
     for (std::uint8_t byte : data) {
         crc ^= static_cast<std::uint32_t>(byte) << 8U;
@@ -93,7 +88,6 @@ ParseResult parse_frame(std::span<const std::uint8_t> data) {
 
     const std::size_t expected_size = kHeaderSize + payload_len + kCrcSize;
     if (data.size() != expected_size) {
-        // Covers both a truncated frame and trailing garbage after the CRC.
         result.status = ParseStatus::BadPayloadLength;
         return result;
     }
@@ -186,4 +180,4 @@ const char* to_string(ValueType type) noexcept {
     return "unknown";
 }
 
-}  // namespace ttg
+}

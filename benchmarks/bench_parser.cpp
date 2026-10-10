@@ -23,12 +23,10 @@ ChannelValue make_int(std::uint16_t id, std::int32_t value) {
     return c;
 }
 
-// Inputs are built once, outside the timed region. Only the parse call itself
-// is measured.
 struct Inputs {
     std::vector<std::uint8_t> empty;
-    std::vector<std::uint8_t> small;  // 3 channels
-    std::vector<std::uint8_t> max;    // kMaxChannels
+    std::vector<std::uint8_t> small;
+    std::vector<std::uint8_t> max;
     std::vector<std::uint8_t> garbage;
 
     Inputs() {
@@ -44,9 +42,7 @@ struct Inputs {
         }
         max = ttg::test::build_frame(MsgType::Telemetry, 1, 0, many);
 
-        // A well-formed header with a deliberately wrong CRC: exercises the
-        // full structural validation plus the CRC path before rejecting.
-        garbage = ttg::test::build_frame(MsgType::Telemetry, 1, 0, {}, /*corrupt_crc=*/true);
+        garbage = ttg::test::build_frame(MsgType::Telemetry, 1, 0, {}, true);
     }
 };
 
@@ -93,4 +89,4 @@ void BM_Crc16(benchmark::State& state) {
 }
 BENCHMARK(BM_Crc16);
 
-}  // namespace
+}

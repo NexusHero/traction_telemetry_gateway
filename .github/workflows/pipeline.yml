@@ -1,19 +1,5 @@
 name: Pipeline
 
-# One workflow run per commit. CI (ci.yml) and the supply chain
-# (supply-chain.yml) are called from here instead of being triggered on their
-# own, for one reason: everything they produce then belongs to the same run.
-# Separate workflows meant separate runs, separate artefact sets, and no single
-# place that could answer "what did the pipeline show for this commit?".
-#
-# The last job answers it. It collects every evidence artefact of the run,
-# assembles one evidence directory, evaluates the compliance controls against
-# it, and renders a final report: the verdict of every gate, the key figures
-# behind them, the compliance status, and a hashed inventory of the evidence.
-#
-# CodeQL and Scorecard stay separate workflows: their results live in GitHub
-# code scanning, not in artefacts, and they run on their own schedules.
-
 on:
   push:
     branches: [main]
@@ -23,9 +9,6 @@ on:
 
 concurrency:
   group: pipeline-${{ github.ref }}
-  # Cancel only in-flight PR runs: every commit on main must produce its own
-  # evidence bundle, so a newer push must not abort the run that records the
-  # evidence for the one before it.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -38,9 +21,6 @@ jobs:
     permissions:
       contents: read
 
-  # The ceiling for the called workflow. Only its container job uses the
-  # write scopes, and only on tags (push, sign, attest); its other job
-  # declares read-only permissions of its own.
   supply-chain:
     name: Supply chain
     uses: $/.github/workflows/supply-chain.yml
@@ -52,11 +32,6 @@ jobs:
     secrets:
       CONAN_AUDIT_TOKEN: ${{ secrets.CONAN_AUDIT_TOKEN }}
 
-  # ---------------------------------------------------------------------------
-  # The final report. if: always() because the run that failed a gate is the
-  # one whose report matters most. The report job itself does not gate: the
-  # verdict belongs to the jobs above, and this job only records it.
-  # ---------------------------------------------------------------------------
   report:
     name: Pipeline report
     needs: [ci, supply-chain]
@@ -64,26 +39,18 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      actions: read            # list this run's jobs and their results
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # By pattern, never "everything": a run also carries artefacts that are
-      # not evidence and that download-artifact cannot extract - the Docker
-      # build record build-push-action uploads (*.dockerbuild) failed this
-      # step. Each matched artefact lands in artifacts/<name>/. The pattern
-      # is a minimatch brace list; a new evidence artefact is named
-      # evidence-* or added here.
       - name: Download the evidence artefacts of this run
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: '{evidence-*,dependency-evidence,image-evidence,static-analysis-reports,coverage-report}'
           path: artifacts
 
-      # The jobs API includes the jobs of the called workflows, so this is
-      # the verdict of every gate, not just of the two calling jobs above.
       - name: Collect job results
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,8 +60,6 @@ jobs:
             --jq '.jobs[] | @json' > jobs.jsonl
           echo "jobs recorded: $(wc -l < jobs.jsonl)"
 
-      # The system Python of ubuntu-24.04 (3.12) is enough: both scripts use
-      # the standard library only.
       - name: Assemble the evidence directory
         run: python3 scripts/pipeline_report.py assemble --artifacts artifacts --out evidence
 

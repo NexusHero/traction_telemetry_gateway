@@ -1,12 +1,3 @@
-# Conan host profile for the AArch64 cross build in ci.yml (Linux on 64-bit
-# ARM, the class of target an on-vehicle gateway runs on). Used as the host
-# profile together with the runner's detected profile as the build profile:
-#
-#   conan install . -pr:h ci/conan/linux-armv8-gcc13 -pr:b default ...
-#
-# The compiler is Ubuntu 24.04's g++-aarch64-linux-gnu (GCC 13). Dependencies
-# without a ConanCenter binary for this configuration (gtest) are built from
-# source with the same cross compiler, via --build=missing.
 [settings]
 os=Linux
 arch=armv8

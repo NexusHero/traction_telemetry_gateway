@@ -1,14 +1,6 @@
 version: 2
 
-# Every ecosystem waits 7 days before proposing a new release. Compromised
-# releases (a hijacked maintainer account, a moved tag) are usually caught and
-# yanked within days; adopting on day 0 means adopting the attack. Actions are
-# pinned by commit SHA, and Dependabot rewrites those pins and their version
-# comments itself.
 updates:
-  # The composite actions under .github/actions pin actions of their own
-  # (setup-conan uses setup-python); "/" alone only covers the workflows, and
-  # a pin nobody bumps is one that quietly ages.
   - package-ecosystem: "github-actions"
     directories:
       - "/"
@@ -19,11 +11,6 @@ updates:
       default-days: 7
     commit-message:
       prefix: "ci(deps)"
-    # One PR for all action updates. Some actions ship as several entry points
-    # of one release (github/codeql-action/init + /analyze) and must move
-    # together: bumped in separate PRs, each PR runs init and analyze from
-    # different majors and CodeQL fails ("Loaded a configuration file for
-    # version '3.38.3', but running version '4.38.2'").
     groups:
       github-actions:
         patterns: ["*"]
@@ -36,15 +23,10 @@ updates:
       default-days: 7
     commit-message:
       prefix: "chore(docker)"
-    # The builder must stay on the same glibc generation as the distroless
-    # runtime (base-nossl-debian12). A major bump (debian 12 -> 13) would produce a
-    # binary that needs a newer glibc than the runtime ships and fails to load.
     ignore:
       - dependency-name: "debian"
         update-types: ["version-update:semver-major"]
 
-  # Python tooling (Conan, gcovr, cyclonedx) for CI and the image build,
-  # hash-pinned in ci/requirements.txt.
   - package-ecosystem: "pip"
     directory: "/ci"
     schedule:

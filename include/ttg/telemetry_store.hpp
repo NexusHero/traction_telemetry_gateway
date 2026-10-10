@@ -22,16 +22,9 @@ struct StoreStats {
     std::uint64_t frames_received{};
     std::uint64_t frames_rejected{};
     std::uint64_t channels_tracked{};
-    // Ingest requests refused for a missing or wrong credential. Counted apart
-    // from frames_rejected: those are malformed input from an authorised
-    // producer, these are someone who is not one.
     std::uint64_t auth_failures{};
 };
 
-// Bounded in-memory store for the most recent value of each channel. Channel
-// ids are attacker-controllable, so the map size is capped and inserts beyond
-// the cap are rejected rather than allowed to grow without bound (FR 7 of
-// IEC 62443-4-2, resource availability).
 class TelemetryStore {
 public:
     explicit TelemetryStore(std::size_t max_channels = 4096);
@@ -51,4 +44,4 @@ private:
     StoreStats stats_{};
 };
 
-}  // namespace ttg
+}

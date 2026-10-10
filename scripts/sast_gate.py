@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""Turn clang-tidy / cppcheck reporting into a gate, via a frozen baseline.
-
-SECURITY.md describes the rollout this implements:
-
-  1. Run the tool without a gate; let it collect a baseline.
-  2. Freeze the baseline. Treat only *new* findings as blocking.
-  3. Tighten the gate once the baseline is clean.
-
-Step 2 is the part that needs code. A gate that fails on every pre-existing
-finding gets switched off within two weeks; a gate that fails only on findings
-a change actually introduced survives, and the baseline shrinks over time
-because lowering it is the easy direction.
-
-Usage
------
-    # fail if the reports contain findings the baseline does not account for
-    sast_gate.py check --baseline .sast-baseline.txt clang-tidy.txt cppcheck.txt
-
-    # record the current findings as the accepted baseline
-    sast_gate.py update --baseline .sast-baseline.txt clang-tidy.txt cppcheck.txt
-
-Baseline format
----------------
-One record per line, "<count>\t<file>\t<check>", sorted. Deliberately not JSON:
-it is reviewed in pull requests, and a one-line diff should mean one changed
-finding.
-
-Why no line numbers
--------------------
-A baseline keyed on line numbers invalidates itself on the next edit above the
-finding, which trains people to regenerate it blindly - and a blindly
-regenerated baseline accepts whatever is in the tree, gate included. Keying on
-(file, check) with a count is stable under edits while still catching a *new*
-instance of an already-known check in the same file.
-"""
 
 from __future__ import annotations
 
@@ -44,14 +9,8 @@ import pathlib
 import re
 import sys
 
-# clang-tidy:  /abs/path/src/parser.cpp:42:17: warning: message [bugprone-foo]
-# cppcheck:    src/parser.cpp:42:17: warning: message [uninitvar]
-#              (CI pins --template to this shape, see ci.yml)
 FINDING_RE = re.compile(
     r"""^
-    # Path, repo-relative or absolute. The optional drive-letter prefix matters:
-    # without it, "C:/src/parser.cpp:42:1" parses as file "C" and the whole
-    # finding is silently dropped on Windows, where developers run the hook.
     (?P<file>(?:[A-Za-z]:)?[^\s:][^:]*)
     :(?P<line>\d+)
     :(?P<col>\d+)
@@ -66,52 +25,28 @@ FINDING_RE = re.compile(
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# cppcheck reports these against itself, not against the code under analysis.
-# Letting them into the baseline would make the gate depend on how cppcheck was
-# invoked rather than on what the code says.
 SELF_DIAGNOSTICS = {"missingInclude", "missingIncludeSystem", "checkersReport"}
 
 
 class MissingReport(Exception):
-    """An analyser report named on the command line does not exist."""
+    pass
 
 
 def normalise_path(raw: str) -> str:
-    """Make a reported path repo-relative with forward slashes.
-
-    clang-tidy reports absolute paths, cppcheck relative ones, and the absolute
-    prefix differs between a CI runner and a developer's machine. Without this,
-    a baseline recorded in one place is worthless in the other.
-    """
     try:
         resolved = pathlib.Path(raw).resolve()
         return resolved.relative_to(REPO_ROOT).as_posix()
     except (ValueError, OSError):
-        # Outside the repo (a system header, say) - keep it as-is, but still
-        # normalise separators so the key is platform-stable.
         return raw.replace(os.sep, "/")
 
 
 def parse_reports(paths: list[str]) -> tuple[collections.Counter, int]:
-    """Aggregate findings from tool output into {(file, check): count}.
-
-    Also returns the number of unique findings, so the caller can tell "clean
-    run" apart from "the report is empty because the tool never ran" - the
-    second is a broken pipeline, not a passing gate.
-    """
-    # Dedupe on the exact location first: clang-tidy re-reports a finding in a
-    # header once per translation unit that includes it, which would otherwise
-    # inflate the count and make the gate depend on how many .cpp files exist.
     seen: set[tuple[str, str, str, str]] = set()
 
     for path in paths:
         try:
             text = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError as exc:
-            # Hard error, not a skip. A report that does not exist produces zero
-            # findings, which would sail through the gate and report success for
-            # an analyser that never ran - the one failure mode a gate must
-            # never have.
             raise MissingReport(f"report not found: {path}") from exc
         for raw_line in text.splitlines():
             match = FINDING_RE.match(raw_line.strip())
@@ -136,13 +71,7 @@ def parse_reports(paths: list[str]) -> tuple[collections.Counter, int]:
 
 
 class MalformedBaseline(Exception):
-    """The baseline file could not be parsed.
-
-    Raised rather than returned so a corrupt baseline can never be mistaken for
-    an empty one - an empty baseline means "nothing is accepted", which is a
-    strict gate, but a *silently* empty one hides the fact that the recorded
-    exemptions were lost.
-    """
+    pass
 
 
 def read_baseline(path: pathlib.Path) -> collections.Counter:
@@ -230,7 +159,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Turn clang-tidy / cppcheck reporting into a gate, via a frozen baseline.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name, handler, help_text in (

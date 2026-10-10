@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""Render a compliance report from the evidence of one pipeline run.
-
-    scripts/compliance_report.py --evidence evidence \\
-        --out-md evidence/compliance-report.md \\
-        --out-json evidence/compliance-report.json
-
-What it does
-------------
-compliance/controls.toml maps regulatory requirements (EU Cyber Resilience
-Act Annex I, Art. 13/14; BSI TR-03183-2) to checks. This script runs those
-checks against the evidence directory a pipeline run produced (SBOM, CVE
-scan, SAST verdict, test log, hardening report, ...) and against the
-repository at the same commit, and writes the result as Markdown for people
-and JSON for machines.
-
-Three kinds of evidence, labelled as such in the report, because an assessor
-weighs them differently:
-
-    execution      produced by this run (a test log, a scan result)
-    configuration  the pipeline is set up to enforce it (a gate in a workflow)
-    document       a reviewed document exists and says what it must
-
-What it deliberately does not do
---------------------------------
-It is not a gate. The gates are the pipeline's jobs; by the time a release
-reaches this script they have passed. The report records what was shown and
-what was not, including known gaps - a report that can only say "met" is
-not evidence of anything. It also never upgrades a status by hand: a control's
-status is derived from its checks, and a failing check overrides whatever
-assessment the catalogue gives.
-
-Evidence that a run did not produce (the pull-request pipeline has no release
-binary) yields "not assessed" for the controls that need it, not a pass.
-"""
 
 from __future__ import annotations
 
@@ -55,7 +21,6 @@ CATALOGUE = REPO_ROOT / "compliance" / "controls.toml"
 PASS, PARTIAL, FAIL, MISSING = "pass", "partial", "fail", "missing"
 EXECUTION, CONFIGURATION, DOCUMENT = "execution", "configuration", "document"
 
-# Control statuses, in the order the summary lists them.
 STATUS_LABELS = {
     "not_met": ("❌", "Not met"),
     "gap": ("🔴", "Known gap"),
@@ -70,7 +35,7 @@ CHECK_ICONS = {PASS: "✅", PARTIAL: "🟡", FAIL: "❌", MISSING: "⚪"}
 
 
 class CatalogueError(Exception):
-    """The control catalogue is malformed."""
+    pass
 
 
 @dataclasses.dataclass
@@ -86,8 +51,6 @@ class CheckResult:
 class Context:
     evidence: pathlib.Path
     repo: pathlib.Path
-    # Every file a check read, so the inventory can hash it: the report is
-    # only as good as the ability to show which bytes it was computed from.
     touched: dict[str, pathlib.Path] = dataclasses.field(default_factory=dict)
 
     def evidence_file(self, name: str) -> pathlib.Path | None:
@@ -109,8 +72,6 @@ CHECKS: dict[str, Callable[[Context], CheckResult]] = {}
 
 
 def check(name: str, kind: str):
-    """Register a check. The function returns (result, detail[, sources])."""
-
     def register(fn):
         def run(ctx: Context) -> CheckResult:
             out = fn(ctx)
@@ -136,11 +97,6 @@ def _load_json(path: pathlib.Path) -> tuple[object | None, str | None]:
         return json.loads(path.read_text(encoding="utf-8")), None
     except (OSError, json.JSONDecodeError) as exc:
         return None, f"{path.name} is not readable JSON: {exc}"
-
-
-# ---------------------------------------------------------------------------
-# Execution evidence - produced by the run
-# ---------------------------------------------------------------------------
 
 
 @check("sbom_present", EXECUTION)
@@ -173,9 +129,6 @@ def _version_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
 
 
-# Supplier strings that only say who generated the entry, not who made the
-# component. The Conan SBOM extension writes "Conan" when a recipe declares no
-# author.
 PLACEHOLDER_CREATORS = {"", "conan", "unknown", "noassertion"}
 
 
@@ -329,13 +282,9 @@ def _coverage_reported(ctx: Context):
     text = path.read_text(encoding="utf-8", errors="replace")
     match = re.search(r"^TOTAL\s+\d+\s+\d+\s+(\d+(?:\.\d+)?)%", text, re.MULTILINE)
     figure = f"{match.group(1)}% line coverage" if match else "coverage report present"
-    # Reported, never judged: the pipeline deliberately has no coverage target.
     return PASS, f"{figure} (reported, not a target)", ["evidence/coverage.txt"]
 
 
-# ctest prints one line per test: "Test  #12: Suite.Name ....   Passed" or
-# "....***Failed". The release's Docker build log prefixes each line with a
-# step marker, which the pattern tolerates.
 CTEST_LINE = re.compile(r"Test\s+#\d+: (\S+) \.+\s*(Passed|\*+Failed|\*+Exception|\*+Timeout|\*+Not Run)")
 
 
@@ -345,8 +294,6 @@ def _test_outcomes(ctx: Context) -> dict[str, bool] | None:
         return None
     outcomes: dict[str, bool] = {}
     for name, verdict in CTEST_LINE.findall(path.read_text(encoding="utf-8", errors="replace")):
-        # Several runs (platforms, sanitizers) may list the same test; one
-        # failure anywhere is a failure.
         outcomes[name] = outcomes.get(name, True) and verdict == "Passed"
     return outcomes
 
@@ -396,11 +343,6 @@ def _security_event_log(ctx: Context):
             f"rate-limited, opt-out TTG_SECURITY_LOG=off; {detail}"
         )
     return result, detail, ["evidence/ctest.txt", "src/main.cpp"]
-
-
-# ---------------------------------------------------------------------------
-# Configuration evidence - the pipeline is set up to enforce it
-# ---------------------------------------------------------------------------
 
 
 @check("image_cve_gates", CONFIGURATION)
@@ -509,7 +451,7 @@ def _actions_pinned(ctx: Context):
         ctx.touched[rel] = path
         for ref in USES.findall(path.read_text(encoding="utf-8")):
             if ref.startswith(("./", "$/")):
-                continue  # this repository, same commit
+                continue
             total += 1
             if ref.startswith("docker://"):
                 if "@sha256:" not in ref:
@@ -605,11 +547,6 @@ def _secure_defaults(ctx: Context):
     if missing:
         return FAIL, f"src/main.cpp lacks: {', '.join(missing)}", ["src/main.cpp"]
     return PASS, "; ".join(required), ["src/main.cpp"]
-
-
-# ---------------------------------------------------------------------------
-# Document evidence
-# ---------------------------------------------------------------------------
 
 
 @check("threat_model", DOCUMENT)
@@ -714,11 +651,6 @@ def _remediation_targets(ctx: Context):
         "SECURITY.md",
         {"remediation targets": "## Remediation targets", "critical within days": "| 7 days |"},
     )
-
-
-# ---------------------------------------------------------------------------
-# Evaluation and rendering
-# ---------------------------------------------------------------------------
 
 
 def load_catalogue(path: pathlib.Path) -> dict:
@@ -908,7 +840,7 @@ def render_markdown(catalogue: dict, run: dict, controls: list[dict], inventory:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description="Render a compliance report from the evidence of one pipeline run.")
     parser.add_argument("--evidence", type=pathlib.Path, required=True, help="directory with the run's evidence")
     parser.add_argument("--catalogue", type=pathlib.Path, default=CATALOGUE)
     parser.add_argument("--version", help="release version; omitted for pipeline runs")
