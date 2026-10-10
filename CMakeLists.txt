@@ -150,7 +150,7 @@ endif()
 if(TTG_BUILD_SERVER OR TTG_BUILD_TESTS)
     find_package(httplib CONFIG REQUIRED)
 
-    add_library(ttg_http STATIC src/http_server.cpp)
+    add_library(ttg_http STATIC src/http_server.cpp src/security_log.cpp)
     target_include_directories(ttg_http PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(ttg_http PUBLIC ttg_core PRIVATE httplib::httplib Threads::Threads)
     target_compile_options(ttg_http PRIVATE ${TTG_WARNINGS} ${TTG_INSTRUMENTATION} ${TTG_HARDEN_COMPILE})
@@ -177,7 +177,8 @@ if(TTG_BUILD_TESTS)
         tests/test_store.cpp
         tests/test_report.cpp
         tests/test_concurrency.cpp
-        tests/test_http_server.cpp)
+        tests/test_http_server.cpp
+        tests/test_security_log.cpp)
 
     # Threads::Threads is needed for test_concurrency.cpp: on Linux std::thread
     # resolves at link time against pthread, and a build without it fails (or,

@@ -36,6 +36,11 @@ void TelemetryStore::ingest(const Frame& frame) {
     stats_.channels_tracked = channels_.size();
 }
 
+void TelemetryStore::record_auth_failure() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    ++stats_.auth_failures;
+}
+
 void TelemetryStore::record_rejected() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++stats_.frames_rejected;

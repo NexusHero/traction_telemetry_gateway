@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 
+#include "ttg/security_log.hpp"
 #include "ttg/telemetry_store.hpp"
 
 namespace httplib {
@@ -11,11 +12,22 @@ class Server;
 
 namespace ttg {
 
+struct HttpServerConfig {
+    // Shared secret a producer presents as "Authorization: Bearer <token>" on
+    // POST /v1/frames. Empty means ingest is unauthenticated - which only
+    // tests do directly; main.cpp refuses to start that way unless the
+    // operator opts out explicitly (secure by default, CRA Annex I (2)(b)).
+    std::string ingest_token;
+
+    // Not owned; may be null. Receives auth failures and rejected frames.
+    SecurityLog* security_log{nullptr};
+};
+
 // Thin REST facade over the telemetry store. The server owns no state of its
 // own; every request is served from the injected store.
 class TelemetryHttpServer {
 public:
-    explicit TelemetryHttpServer(TelemetryStore& store);
+    explicit TelemetryHttpServer(TelemetryStore& store, HttpServerConfig config = {});
     ~TelemetryHttpServer();
 
     TelemetryHttpServer(const TelemetryHttpServer&) = delete;
@@ -34,6 +46,7 @@ public:
 
 private:
     TelemetryStore& store_;
+    HttpServerConfig config_;
     std::unique_ptr<httplib::Server> server_;
 };
 

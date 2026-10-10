@@ -104,6 +104,13 @@ Invoke-Native {
         -o '&:build_tests=False'
 } 'conan sbom:cyclonedx failed'
 
+# The extension's output falls short of BSI TR-03183-2 (CycloneDX 1.4, no
+# hashes, "Conan" as every component's maker). Enriched in place, so no SBOM
+# leaves this script in the weaker form. Needs Python >= 3.11 (tomllib).
+Invoke-Native {
+    python (Join-Path $repoRoot 'scripts/sbom_enrich.py') --sbom $Output --build-type $BuildType
+} 'sbom_enrich.py failed'
+
 Write-Host ">> wrote $Output"
 
 if ($Scan) {

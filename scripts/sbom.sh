@@ -92,6 +92,11 @@ conan sbom:cyclonedx "$repo_root" \
   -s "build_type=$build_type" \
   -o "&:build_tests=False"
 
+# The extension's output falls short of BSI TR-03183-2 (CycloneDX 1.4, no
+# hashes, "Conan" as every component's maker). Enriched in place, so no SBOM
+# leaves this script in the weaker form. Needs Python >= 3.11 (tomllib).
+python3 "$repo_root/scripts/sbom_enrich.py" --sbom "$output" --build-type "$build_type"
+
 echo ">> wrote $output"
 
 if [[ $scan -eq 1 ]]; then

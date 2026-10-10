@@ -43,8 +43,19 @@ cmake -S . -B build -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
-./build/ttg_server            # listens on 0.0.0.0:8080
+# the server refuses to start without an ingest token (secure by default)
+openssl rand -hex 32 > /tmp/ttg-token
+TTG_INGEST_TOKEN_FILE=/tmp/ttg-token ./build/ttg_server   # listens on 0.0.0.0:8080
 ```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TTG_INGEST_TOKEN_FILE` | - | file holding the ingest bearer token (preferred: a mounted secret) |
+| `TTG_INGEST_TOKEN` | - | the token itself, if no file is used; at least 32 characters |
+| `TTG_ALLOW_UNAUTHENTICATED_INGEST` | unset | `1` runs without ingest authentication - logged, not for production |
+| `TTG_SECURITY_LOG` | `on` | `off` disables the security event log (JSON lines on stderr) |
+| `TTG_HOST` / `TTG_PORT` | `0.0.0.0` / `8080` | bind address |
+| `TTG_MAX_CHANNELS` | `4096` | upper bound of tracked channels |
 
 Environment variables: `TTG_HOST` (default `0.0.0.0`), `TTG_PORT` (default
 `8080`), `TTG_MAX_CHANNELS` (default `4096`).
@@ -53,7 +64,8 @@ Environment variables: `TTG_HOST` (default `0.0.0.0`), `TTG_PORT` (default
 
 ```sh
 python3 tools/gen_frame.py 1 > /tmp/frame.bin
-curl --data-binary @/tmp/frame.bin http://127.0.0.1:8080/v1/frames
+curl -H "Authorization: Bearer $(cat /tmp/ttg-token)" \
+     --data-binary @/tmp/frame.bin http://127.0.0.1:8080/v1/frames
 curl http://127.0.0.1:8080/v1/telemetry
 ```
 

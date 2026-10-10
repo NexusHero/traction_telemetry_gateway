@@ -1,0 +1,24 @@
+# Who makes each third-party component, for the SBOM.
+#
+# The Conan SBOM extension writes "Conan" as the author of any recipe that
+# declares none - which is every ConanCenter recipe. That names the packager,
+# not the maker, and BSI TR-03183-2 asks for the creator of each component
+# (with a URL or e-mail). scripts/sbom_enrich.py fills it from this file.
+#
+# Maintained by hand, on purpose: a new dependency without an entry here keeps
+# the placeholder, the compliance report flags the BSI control as partially
+# met, and the pull request that added the dependency is where the entry gets
+# written. Covered by CODEOWNERS (/compliance/).
+
+[manufacturer]
+# This project, as the creator of the SBOM and of the top-level component.
+name = "Suhay Sevinc (traction_telemetry_gateway)"
+url = "https://github.com/NexusHero/traction_telemetry_gateway"
+
+[components.cpp-httplib]
+name = "Yuji Hirose"
+url = "https://github.com/yhirose/cpp-httplib"
+
+[components.nlohmann_json]
+name = "Niels Lohmann"
+url = "https://github.com/nlohmann/json"
