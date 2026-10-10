@@ -50,7 +50,7 @@ jobs:
           fetch-depth: 0   # the changelog below walks tag history
 
       - name: Set up Conan
-        uses: ./.github/actions/setup-conan
+        uses: $/.github/actions/setup-conan
 
       # The dispatch input reaches the shell through env, never through ${{ }}
       # template expansion: expanded inline it becomes part of the script, so

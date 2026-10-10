@@ -34,7 +34,7 @@ permissions:
 jobs:
   ci:
     name: CI
-    uses: ./.github/workflows/ci.yml
+    uses: $/.github/workflows/ci.yml
     permissions:
       contents: read
 
@@ -43,7 +43,7 @@ jobs:
   # declares read-only permissions of its own.
   supply-chain:
     name: Supply chain
-    uses: ./.github/workflows/supply-chain.yml
+    uses: $/.github/workflows/supply-chain.yml
     permissions:
       contents: read
       packages: write

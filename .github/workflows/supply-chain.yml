@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Conan
-        uses: ./.github/actions/setup-conan
+        uses: $/.github/actions/setup-conan
 
       # No Conan cache here. This job's lockfile and SBOM are what the image
       # is built from and what gets attested on tags, so a poisoned cache entry
@@ -190,7 +190,7 @@ jobs:
       # Versions and SHA-256 hashes live in the composite action, shared with
       # cve-rescan.yml so the gate and the nightly rescan use the same scanners.
       - name: Install trivy and grype
-        uses: ./.github/actions/install-scanners
+        uses: $/.github/actions/install-scanners
 
       - name: Scan image (gate = high)
         run: trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed ttg:ci
