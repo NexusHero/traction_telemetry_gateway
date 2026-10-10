@@ -1,10 +1,13 @@
 name: Supply chain
 
+# Called by pipeline.yml, together with ci.yml, so dependency, image and DAST
+# evidence lands in the same workflow run as the build and test evidence.
+# workflow_dispatch stays for running the supply chain on its own.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
+  workflow_call:
+    secrets:
+      CONAN_AUDIT_TOKEN:
+        required: false
   workflow_dispatch:
 
 # Read-only by default; the write scopes are granted to the one job that
@@ -106,18 +109,6 @@ jobs:
             [ -f "$file" ] && cp "$file" evidence/
           done
           ls -la evidence/
-
-      # The compliance report on every change, not only at release: a pull
-      # request that breaks a control shows it in its own run summary, while
-      # it can still be fixed. This run has no release binary, so controls
-      # that need one read "not assessed" - the release report covers them.
-      - name: Compliance report (CRA / BSI TR-03183-2)
-        if: always()
-        run: |
-          python scripts/compliance_report.py --evidence evidence \
-            --out-md evidence/compliance-report.md \
-            --out-json evidence/compliance-report.json
-          cat evidence/compliance-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SBOM and reports
         if: always()

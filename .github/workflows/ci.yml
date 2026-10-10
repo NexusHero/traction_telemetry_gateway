@@ -1,14 +1,16 @@
 name: CI
 
+# Called by pipeline.yml, which owns the triggers and the concurrency group:
+# CI and the supply chain run as one workflow run per commit, so every piece
+# of evidence they produce lands in the same run and one final job can turn it
+# into a report. workflow_dispatch stays for running CI on its own.
+#
+# Each job uploads what it observed as an `evidence-*` artefact. Logs that
+# only ever lived in a job's console are not evidence: they expire with the
+# run, and nothing downstream can read them.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -94,12 +96,25 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          ctest --test-dir build --output-on-failure 2>&1 | tee evidence/ctest.txt
 
       # The mitigations are Linux-only (see CMakeLists.txt), and so is ELF.
       - name: Verify exploit mitigations
         if: runner.os == 'Linux'
-        run: scripts/check_hardening.sh build/ttg_server build/ttg_tests
+        run: |
+          set -o pipefail
+          scripts/check_hardening.sh build/ttg_server build/ttg_tests | tee evidence/hardening.txt
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evidence-build-${{ matrix.os }}
+          path: evidence/
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Stage 5, the target half. The jobs above build for the runner (x86-64);
@@ -160,12 +175,25 @@ jobs:
           readelf -h build/ttg_server | grep -q 'Machine:.*AArch64'
 
       - name: Test (qemu-aarch64)
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          ctest --test-dir build --output-on-failure 2>&1 | tee evidence/ctest.txt
 
       # readelf from binutils reads any ELF, so the same script checks the
       # ARM binary: PAC/BTI aside, the mitigations are the same set.
       - name: Verify exploit mitigations
-        run: scripts/check_hardening.sh build/ttg_server build/ttg_tests
+        run: |
+          set -o pipefail
+          scripts/check_hardening.sh build/ttg_server build/ttg_tests | tee evidence/hardening.txt
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evidence-cross-aarch64
+          path: evidence/
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Stage 5. One sanitizer per job: ASan and TSan ship incompatible runtimes and
@@ -226,7 +254,18 @@ jobs:
       # rest of the suite is single-threaded, so a TSan run over it would pass
       # without ever exercising a lock.
       - name: Run tests under ${{ matrix.label }}
-        run: ${{ matrix.options }} ctest --test-dir build --output-on-failure
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          ${{ matrix.options }} ctest --test-dir build --output-on-failure 2>&1 | tee evidence/ctest.txt
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evidence-sanitize-${{ matrix.sanitizer }}
+          path: evidence/
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Stage 5, the metric half. Coverage is reported, never gated: a threshold
@@ -374,9 +413,10 @@ jobs:
 
       - name: Gate on new findings
         run: |
+          set -o pipefail
           python scripts/sast_gate.py check \
             --baseline .sast-baseline.txt \
-            clang-tidy.txt cppcheck.txt
+            clang-tidy.txt cppcheck.txt | tee sast-gate.txt
 
       - name: Upload analyzer reports
         if: always()
@@ -386,6 +426,7 @@ jobs:
           path: |
             clang-tidy.txt
             cppcheck.txt
+            sast-gate.txt
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
@@ -469,15 +510,22 @@ jobs:
       # non-zero exit is a crash, a leak or a slow input.
       - name: Fuzz for 60 seconds
         run: |
-          mkdir -p fuzz-corpus artifacts
+          set -o pipefail
+          mkdir -p fuzz-corpus artifacts evidence
           cp tests/corpus/* fuzz-corpus/
           ./build-fuzz/fuzz_frame_parser fuzz-corpus/ \
-            -max_total_time=60 -print_final_stats=1 -artifact_prefix=artifacts/
+            -max_total_time=60 -print_final_stats=1 -artifact_prefix=artifacts/ \
+            2>&1 | tee evidence/fuzz-smoke.txt
 
-      - name: Upload crash reproducers
-        if: failure()
+      # Always, not only on failure: the run statistics are the evidence that
+      # the fuzzer ran at all, and a reproducer is the evidence when it found
+      # something.
+      - name: Upload fuzzing evidence and crash reproducers
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-smoke-reproducers
-          path: artifacts/
+          name: evidence-fuzz-smoke
+          path: |
+            evidence/
+            artifacts/
           if-no-files-found: ignore
